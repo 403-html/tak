@@ -1,6 +1,6 @@
 # RFC 0002: Second-order byte-context tensor train
 
-- Status: Phase A passed; Phase B authorized
+- Status: Phase A accepted; Phase B rejected
 - Date: 2026-11-22
 - Scope: Research artifact only
 - TAK-C method identifier: None
@@ -111,6 +111,21 @@ The first byte uses a uniform distribution. The second byte MUST use a defined
 one-byte fallback model. The encoder MUST include all fallback parameters in
 the artifact size.
 
+The experimental implementation uses a uniform distribution for both startup
+bytes. It stores a complete artifact with this layout:
+
+| Offset | Size | Field | Required value |
+|---:|---:|---|---|
+| 0 | 4 | Magic | ASCII `TKR3` |
+| 4 | 1 | Version | 0 |
+| 5 | 1 | Flags | 0 |
+| 6 | 2 | Rank | 1, 2, 4, or 8 |
+| 8 | 8 | Uncompressed length | 0 to 2^64 - 1 |
+| 16 | 8 | Payload length | 0 to 2^64 - 1 |
+| 24 | 4 | Checksum | CRC-32/ISO-HDLC of restored bytes |
+| 28 | variable | Cores | `G0`, then `G1`, then `G2`; unsigned 16-bit little-endian |
+| after cores | variable | Payload | Existing arithmetic coder |
+
 ## 6. Numerical requirements
 
 Training MAY use floating point. The artifact MUST serialize quantized integer
@@ -120,6 +135,13 @@ The design MUST prove accumulator bounds for rank 8 before implementation. It
 MUST define score normalization, rounding, nonzero frequencies, and maximum
 frequency total. Encoder and decoder MUST derive identical cumulative ranges
 from the serialized cores.
+
+For rank 8, each two-core partial contraction is at most
+`8 * 65535^2 = 34,358,689,800`. Each complete score is at most
+`8 * 34,358,689,800 * 65535 = 18,013,573,888,344,000`. Both fit in an unsigned
+64-bit integer. Normalization multiplies the score by 16128 and therefore uses
+an unsigned 128-bit intermediate. Every output frequency is one plus the
+floored normalized share. The maximum total is 16384.
 
 ## 7. Measurements and ablations
 
@@ -191,7 +213,19 @@ Order-2 decoding took 1.05 to 1.31 times the order-1 time. The complete
 experiment process, including a 100 MB source buffer and both controls, peaked
 at 155,492 KiB. All artifacts passed exact round-trip verification.
 
-Authorize Phase B. This decision authorizes only the three-core dependency in
-Section 5, ranks 1, 2, 4, and 8, and the stated ablations. It does not authorize
-a TAK-C method identifier or a general increase in tensor complexity.
+Phase B implemented the authorized three-core structure with sequential
+nonnegative matrix factorizations and 16-bit cores. It tested ranks 1, 2, 4,
+and 8 with 20 updates on `enwik8` and the five Silesia inputs.
+
+Reject Phase B. No rank beat order-1 or order-2 on any input. The best tensor
+artifact was 14.5% to 81.0% larger than order-1 and 25.7% to 105.1% larger than
+order-2. Full-precision cross-entropy shows that the factorization or training
+objective is the limiting stage. Quantization and integer rounding do not
+explain the result.
+
+Preserve adaptive order-2 as a successful classical research control. Preserve
+`TKR3` only to reproduce the negative result. Do not assign either research
+artifact a TAK-C method identifier yet. A different tensor optimizer or
+structure requires a new RFC or an explicit RFC amendment with a new mechanism
+and stop condition. Do not increase rank without that evidence.
 

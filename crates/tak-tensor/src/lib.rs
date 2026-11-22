@@ -2,6 +2,13 @@
 //!
 //! Artifacts use `TKRX`, not TAK-C. This crate makes no compression claim.
 
+mod second_order;
+
+pub use second_order::{
+    Order2TensorDiagnostics, QuantizedOrder2Model, decode_order2_tensor_artifact,
+    encode_order2_tensor_artifact,
+};
+
 use tak_context::{ByteModel, Order2Model};
 
 const ALPHABET: usize = 256;

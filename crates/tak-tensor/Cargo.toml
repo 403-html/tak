@@ -11,6 +11,10 @@ rust-version.workspace = true
 name = "tak-tensor-experiment"
 path = "src/main.rs"
 
+[[bin]]
+name = "tak-tensor-order2-experiment"
+path = "src/order2_main.rs"
+
 [dependencies]
 tak-codecs = { path = "../tak-codecs" }
 tak-context = { path = "../tak-context" }

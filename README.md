@@ -61,13 +61,21 @@ reported artifact size includes the header, quantized cores, and payload.
 The output also separates full-precision factorization loss, core quantization
 loss, and integer-frequency rounding loss in bits per byte.
 
-RFC 0002 passed its classical gate: two-byte context improves complete size on
-the current development corpus. Its proposed three-core tensor train is not yet
-implemented and has no TAK-C method identifier.
+RFC 0002 passed its classical gate: adaptive two-byte context improves complete
+size on the current development corpus. Its three-core tensor train was then
+implemented and rejected because it lost to both classical controls. Neither
+research method has a TAK-C identifier.
+
+Reproduce the RFC 0002 tensor artifact with:
+
+```console
+cargo run --release -p tak-tensor --bin tak-tensor-order2-experiment -- \
+  input.bin --rank 8 --iterations 20 --output result.tkr3
+```
 
 ## License
 
 Licensed under Apache-2.0.
 
-Copyright 2026 Tymoteusz "403-html" Stępień. See [NOTICE](NOTICE).
+Copyright 2026 Tymoteusz "403-html" Stępień.
 
