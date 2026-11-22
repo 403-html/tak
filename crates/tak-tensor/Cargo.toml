@@ -1,0 +1,21 @@
+[package]
+name = "tak-tensor"
+description = "Quantized tensor-factorization experiments for TAK"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "tak-tensor-experiment"
+path = "src/main.rs"
+
+[dependencies]
+tak-codecs = { path = "../tak-codecs" }
+tak-context = { path = "../tak-context" }
+tak-entropy = { path = "../tak-entropy" }
+
+[lints]
+workspace = true
+

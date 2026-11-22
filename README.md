@@ -41,6 +41,20 @@ This is a research foundation, not a stable codec or archive application.
 The `.takp` archive container, tensor model, FFI, and stable format specification
 will be added only after measurements justify them.
 
+## Tensor screening experiment
+
+The `tak-tensor` crate implements RFC 0001 as a research artifact. It is not a
+TAK-C codec. Run one quantized bigram-factorization rank with:
+
+```console
+cargo run --release -p tak-tensor --bin tak-tensor-experiment -- \
+  input.bin --rank 4 --iterations 20 --output result.tkrx
+```
+
+By default, the first 90% of the input trains the model and the last 10% is the
+held-out compression input. Use `--train-bytes` to record an exact split. The
+reported artifact size includes the header, quantized cores, and payload.
+
 ## License
 
 Licensed under Apache-2.0.

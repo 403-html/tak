@@ -3,6 +3,7 @@ members = [
     "crates/tak-context",
     "crates/tak-entropy",
     "crates/tak-codecs",
+    "crates/tak-tensor",
     "crates/tak-cli",
 ]
 resolver = "2"

@@ -27,3 +27,12 @@ version = "0.1.0"
 dependencies = [
  "tak-context",
 ]
+
+[[package]]
+name = "tak-tensor"
+version = "0.1.0"
+dependencies = [
+ "tak-codecs",
+ "tak-context",
+ "tak-entropy",
+]

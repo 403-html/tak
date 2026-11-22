@@ -1,6 +1,6 @@
 # RFC 0001: Quantized bigram factorization screening experiment
 
-- Status: Proposed
+- Status: Experimental
 - Date: 2026-11-22
 - Scope: Research artifact only
 - TAK-C method identifier: None
@@ -46,6 +46,22 @@ For each context, the decoder MUST convert all 256 scores into nonzero integer
 frequencies whose total does not exceed 16384. The RFC implementation MUST
 specify the rounding and remainder rules exactly. Encoder and decoder MUST
 derive identical frequencies from the serialized cores.
+
+The current implementation normalizes each right-core component by its largest
+value and transfers that scale to the corresponding left-core component. It
+then normalizes all left-core values by one global maximum. It multiplies each
+normalized value by 65535 and rounds to the nearest integer.
+
+For a context `c` and symbol `s`, the decoder calculates:
+
+```text
+score[s] = sum(k = 0 .. rank-1, left[c, k] * right[k, s])
+S        = sum(s = 0 .. 255, score[s])
+freq[s]  = 1 + floor(score[s] * 16128 / S)
+```
+
+If `S` is zero, every frequency is one. The frequency total can be less than
+16384 because the decoder does not distribute division remainders.
 
 The first byte uses a uniform distribution. Each later byte uses the preceding
 decoded byte as its context.
@@ -156,6 +172,7 @@ The implementation MUST include:
 
 ## 11. Decision
 
-No decision has been made. Implementation and held-out measurements are
-required before this RFC can be accepted or rejected.
+The research artifact and the first development-corpus measurement exist. No
+decision has been made. Measurements on all required held-out dataset groups
+are required before this RFC can be accepted or rejected.
 
