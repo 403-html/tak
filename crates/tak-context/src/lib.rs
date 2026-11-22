@@ -202,6 +202,15 @@ pub struct Order2SmoothedModel {
     parent_weight: NonZeroU16,
 }
 
+/// An adaptive order-2 model with a normalized finite-strength parent prior.
+pub struct Order2NormalizedModel {
+    parents: Vec<Distribution>,
+    locals: Vec<Option<Box<SparseDistribution>>>,
+    history: [u8; 2],
+    seen: u8,
+    prior_strength: NonZeroU16,
+}
+
 #[derive(Clone, Default)]
 struct SparseDistribution {
     // Each value is the frequency above the implicit pseudocount of one.
@@ -403,6 +412,115 @@ impl ByteModel for Order2SmoothedModel {
     }
 }
 
+impl Order2NormalizedModel {
+    /// Creates a model with a fixed nonzero prior strength.
+    #[must_use]
+    pub fn new(prior_strength: NonZeroU16) -> Self {
+        let mut locals = Vec::with_capacity(ORDER2_SINGLE_BASE);
+        locals.resize_with(ORDER2_SINGLE_BASE, || None);
+        Self {
+            parents: vec![Distribution::new(); ALPHABET_SIZE + 1],
+            locals,
+            history: [0; 2],
+            seen: 0,
+            prior_strength,
+        }
+    }
+
+    fn parent_index(&self) -> usize {
+        if self.seen == 0 {
+            START_CONTEXT
+        } else {
+            usize::from(self.history[1])
+        }
+    }
+
+    fn local_index(&self) -> Option<usize> {
+        (self.seen >= 2).then(|| (usize::from(self.history[0]) << 8) | usize::from(self.history[1]))
+    }
+
+    fn local(&self) -> Option<&SparseDistribution> {
+        self.local_index()
+            .and_then(|context| self.locals[context].as_deref())
+    }
+}
+
+impl ByteModel for Order2NormalizedModel {
+    fn range(&self, symbol: u8) -> (u32, u32, u32) {
+        let parent = &self.parents[self.parent_index()];
+        if self.seen < 2 {
+            return parent.range(symbol);
+        }
+        let strength = u32::from(self.prior_strength.get());
+        let (parent_low, parent_high, parent_total) = parent.range(symbol);
+        let (local_low, local_increment) =
+            self.local().map_or((0, 0), |row| row.extra_range(symbol));
+        let local_total = self.local().map_or(0, |row| row.total);
+        let low = local_low * parent_total + strength * parent_low;
+        (
+            low,
+            (local_low + local_increment) * parent_total + strength * parent_high,
+            (local_total + strength) * parent_total,
+        )
+    }
+
+    fn symbol(&self, value: u32) -> (u8, u32, u32, u32) {
+        let parent = &self.parents[self.parent_index()];
+        if self.seen < 2 {
+            return parent.symbol(value);
+        }
+        let strength = u32::from(self.prior_strength.get());
+        let local = self.local();
+        let total = (local.map_or(0, |row| row.total) + strength) * parent.total;
+        let mut local_index = 0;
+        let mut low = 0;
+        for symbol in 0_u8..=255 {
+            let local_frequency = local.map_or(0, |row| {
+                let Some(&(candidate, increment)) = row.increments.get(local_index) else {
+                    return 0;
+                };
+                if candidate == symbol {
+                    local_index += 1;
+                    u32::from(increment)
+                } else {
+                    0
+                }
+            });
+            let frequency = local_frequency * parent.total
+                + strength * u32::from(parent.frequencies[usize::from(symbol)]);
+            let high = low + frequency;
+            if value < high {
+                return (symbol, low, high, total);
+            }
+            low = high;
+        }
+        unreachable!("value is below the normalized distribution total")
+    }
+
+    fn update(&mut self, symbol: u8) {
+        let parent = self.parent_index();
+        self.parents[parent].update(symbol);
+        if let Some(context) = self.local_index() {
+            self.locals[context]
+                .get_or_insert_with(|| Box::new(SparseDistribution::default()))
+                .update(symbol);
+        }
+        self.history.rotate_left(1);
+        self.history[1] = symbol;
+        self.seen = self.seen.saturating_add(1).min(2);
+    }
+
+    fn total(&self) -> u32 {
+        if self.seen < 2 {
+            self.parents[self.parent_index()].total
+        } else {
+            let parent_total = self.parents[self.parent_index()].total;
+            (self.local().map_or(0, |row| row.total) + u32::from(self.prior_strength.get()))
+                * parent_total
+        }
+    }
+}
+
 /// An adaptive model selected by the three immediately preceding bytes.
 ///
 /// Each observed context stores only symbols that have followed it. The
@@ -592,8 +710,8 @@ mod tests {
     use std::num::NonZeroU16;
 
     use super::{
-        ByteModel, Distribution, Order0Model, Order1Model, Order2Model, Order2SmoothedModel,
-        Order3BackoffModel, Order3Model, SparseDistribution,
+        ByteModel, Distribution, Order0Model, Order1Model, Order2Model, Order2NormalizedModel,
+        Order2SmoothedModel, Order3BackoffModel, Order3Model, SparseDistribution,
     };
 
     fn exercise(mut model: impl ByteModel) {
@@ -625,6 +743,15 @@ mod tests {
     fn smoothed_order_2_ranges_remain_valid() {
         for weight in [1, 2, 4, 8, 16, 32, 64] {
             exercise(Order2SmoothedModel::new(NonZeroU16::new(weight).unwrap()));
+        }
+    }
+
+    #[test]
+    fn normalized_order_2_ranges_remain_valid() {
+        for strength in [1, 4, 16, 64, 256, 1024] {
+            exercise(Order2NormalizedModel::new(
+                NonZeroU16::new(strength).unwrap(),
+            ));
         }
     }
 

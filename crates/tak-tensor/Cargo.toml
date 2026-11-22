@@ -27,6 +27,10 @@ path = "src/order3_backoff_main.rs"
 name = "tak-order2-smoothing-gate"
 path = "src/order2_smoothing_main.rs"
 
+[[bin]]
+name = "tak-order2-normalized-gate"
+path = "src/order2_normalized_main.rs"
+
 [dependencies]
 tak-codecs = { path = "../tak-codecs" }
 tak-context = { path = "../tak-context" }

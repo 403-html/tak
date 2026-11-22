@@ -87,6 +87,12 @@ lost on all five Silesia groups and was 4.9% larger in aggregate. It is
 rejected. A future smoothing experiment must normalize the parent prior instead
 of testing more raw-count weights. This result does not authorize tensor work.
 
+RFC 0006 applies that normalization with a fixed prior mass. Strength 4 is
+13.7% smaller than order-2 in aggregate and passes the size condition on all
+eight development groups. The complete gate is still pending because the
+current symbol lookup exceeds the decoder-speed limit on five groups. Treat
+this as a promising development result, not a validated codec claim.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console
@@ -110,6 +116,12 @@ Reproduce the rejected RFC 0005 smoothing screen with:
 
 ```console
 cargo run --release -p tak-tensor --bin tak-order2-smoothing-gate -- input.bin
+```
+
+Run the preliminary RFC 0006 screen with:
+
+```console
+cargo run --release -p tak-tensor --bin tak-order2-normalized-gate -- input.bin
 ```
 
 ## License
