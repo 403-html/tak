@@ -1,6 +1,6 @@
 # TAK Pack
 
-[Engineering and research guide](AGENTS.md)
+<sub>For coding agents: <a href="AGENTS.md">project instructions</a>.</sub>
 
 TAK Pack is an experimental, lossless compression project. The research goal
 is to test whether compact tensor-network models can improve practical lossless
