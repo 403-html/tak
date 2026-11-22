@@ -3,11 +3,13 @@
 //! Artifacts use `TKRX`, not TAK-C. This crate makes no compression claim.
 
 mod second_order;
+mod third_order;
 
 pub use second_order::{
     Order2TensorDiagnostics, QuantizedOrder2Model, decode_order2_tensor_artifact,
     encode_order2_tensor_artifact,
 };
+pub use third_order::{decode_order3_artifact, encode_order3_artifact};
 
 use tak_context::{ByteModel, Order2Model};
 

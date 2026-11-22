@@ -66,11 +66,24 @@ size on the current development corpus. Its three-core tensor train was then
 implemented and rejected because it lost to both classical controls. Neither
 research method has a TAK-C identifier.
 
+RFC 0003 tested a specific third-order dependency with a sparse adaptive
+classical control. It was rejected because it produced larger artifacts and
+slower decoding than order-2 on every tested group. It does not authorize
+another tensor implementation. A new tensor structure still requires a new
+dependency mechanism and a stop condition that address RFC 0002's measured
+factorization loss.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console
 cargo run --release -p tak-tensor --bin tak-tensor-order2-experiment -- \
   input.bin --rank 8 --iterations 20 --output result.tkr3
+```
+
+Run the RFC 0003 classical gate with:
+
+```console
+cargo run --release -p tak-tensor --bin tak-order3-gate -- input.bin
 ```
 
 ## License

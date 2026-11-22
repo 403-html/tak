@@ -2,6 +2,8 @@
 //!
 //! Model updates use integers only. Encoder and decoder updates are identical.
 
+use std::collections::HashMap;
+
 const ALPHABET_SIZE: usize = 256;
 const MAX_TOTAL: u32 = 16_384;
 const START_CONTEXT: usize = 256;
@@ -162,6 +164,141 @@ pub struct Order2Model {
     previous: Option<u8>,
 }
 
+#[derive(Clone, Default)]
+struct SparseDistribution {
+    // Each value is the frequency above the implicit pseudocount of one.
+    increments: Vec<(u8, u16)>,
+    total: u32,
+}
+
+impl SparseDistribution {
+    fn range(&self, symbol: u8) -> (u32, u32, u32) {
+        let extra_low: u32 = self
+            .increments
+            .iter()
+            .take_while(|(candidate, _)| *candidate < symbol)
+            .map(|(_, increment)| u32::from(*increment))
+            .sum();
+        let increment = self
+            .increments
+            .binary_search_by_key(&symbol, |(candidate, _)| *candidate)
+            .map_or(0, |index| self.increments[index].1);
+        let low = u32::from(symbol) + extra_low;
+        (low, low + 1 + u32::from(increment), 256 + self.total)
+    }
+
+    fn symbol(&self, value: u32) -> (u8, u32, u32, u32) {
+        let total = 256 + self.total;
+        let mut low = 0;
+        let mut increment_index = 0;
+        for symbol in 0_u16..=255 {
+            let symbol = u8::try_from(symbol).expect("symbol is at most 255");
+            let increment = self
+                .increments
+                .get(increment_index)
+                .filter(|(candidate, _)| *candidate == symbol)
+                .map_or(0, |(_, increment)| {
+                    increment_index += 1;
+                    *increment
+                });
+            let high = low + 1 + u32::from(increment);
+            if value < high {
+                return (symbol, low, high, total);
+            }
+            low = high;
+        }
+        unreachable!("value is below the sparse distribution total")
+    }
+
+    fn update(&mut self, symbol: u8) {
+        if 256 + self.total >= MAX_TOTAL {
+            for (_, increment) in &mut self.increments {
+                *increment /= 2;
+            }
+            self.increments.retain(|(_, increment)| *increment != 0);
+            self.total = self
+                .increments
+                .iter()
+                .map(|(_, increment)| u32::from(*increment))
+                .sum();
+        }
+        match self
+            .increments
+            .binary_search_by_key(&symbol, |(candidate, _)| *candidate)
+        {
+            Ok(index) => self.increments[index].1 += 1,
+            Err(index) => self.increments.insert(index, (symbol, 1)),
+        }
+        self.total += 1;
+    }
+}
+
+/// An adaptive model selected by the three immediately preceding bytes.
+///
+/// Each observed context stores only symbols that have followed it. The
+/// implicit frequency of every other symbol is one. This is mathematically
+/// equivalent to a dense adaptive distribution but avoids allocating 512
+/// bytes for every observed three-byte context.
+#[derive(Default)]
+pub struct Order3Model {
+    distributions: HashMap<u32, SparseDistribution>,
+    history: [u8; 3],
+    seen: u8,
+}
+
+impl Order3Model {
+    fn context(&self) -> u32 {
+        match self.seen {
+            0 => 0,
+            1 => 0x0100_0000 | u32::from(self.history[2]),
+            2 => 0x0200_0000 | (u32::from(self.history[1]) << 8) | u32::from(self.history[2]),
+            _ => {
+                0x0300_0000
+                    | (u32::from(self.history[0]) << 16)
+                    | (u32::from(self.history[1]) << 8)
+                    | u32::from(self.history[2])
+            }
+        }
+    }
+}
+
+impl ByteModel for Order3Model {
+    fn range(&self, symbol: u8) -> (u32, u32, u32) {
+        self.distributions
+            .get(&self.context())
+            .map_or((u32::from(symbol), u32::from(symbol) + 1, 256), |row| {
+                row.range(symbol)
+            })
+    }
+
+    fn symbol(&self, value: u32) -> (u8, u32, u32, u32) {
+        self.distributions.get(&self.context()).map_or_else(
+            || {
+                let symbol = u8::try_from(value).expect("uniform distribution total is 256");
+                (symbol, value, value + 1, 256)
+            },
+            |row| row.symbol(value),
+        )
+    }
+
+    fn update(&mut self, symbol: u8) {
+        let context = self.context();
+        self.distributions
+            .entry(context)
+            .or_default()
+            .update(symbol);
+        self.history.rotate_left(1);
+        self.history[2] = symbol;
+        self.seen = self.seen.saturating_add(1).min(3);
+    }
+
+    fn total(&self) -> u32 {
+        self.distributions
+            .get(&self.context())
+            .map_or(256, |row| 256 + row.total)
+    }
+}
+
 impl Default for Order2Model {
     fn default() -> Self {
         let mut distributions = Vec::with_capacity(ORDER2_CONTEXT_COUNT);
@@ -213,7 +350,10 @@ impl ByteModel for Order2Model {
 
 #[cfg(test)]
 mod tests {
-    use super::{ByteModel, Order0Model, Order1Model, Order2Model};
+    use super::{
+        ByteModel, Distribution, Order0Model, Order1Model, Order2Model, Order3Model,
+        SparseDistribution,
+    };
 
     fn exercise(mut model: impl ByteModel) {
         for symbol in (0_u8..=255).cycle().take(40_000) {
@@ -238,5 +378,23 @@ mod tests {
     #[test]
     fn order_2_ranges_remain_valid() {
         exercise(Order2Model::default());
+    }
+
+    #[test]
+    fn order_3_ranges_remain_valid() {
+        exercise(Order3Model::default());
+    }
+
+    #[test]
+    fn sparse_distribution_matches_dense_distribution() {
+        let mut sparse = SparseDistribution::default();
+        let mut dense = Distribution::new();
+        for symbol in (0_u8..=255).cycle().take(40_000) {
+            assert_eq!(sparse.range(symbol), dense.range(symbol));
+            let (low, _, _) = dense.range(symbol);
+            assert_eq!(sparse.symbol(low), dense.symbol(low));
+            sparse.update(symbol);
+            dense.update(symbol);
+        }
     }
 }
