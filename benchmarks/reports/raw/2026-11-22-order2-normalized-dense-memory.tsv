@@ -1,0 +1,2 @@
+complete_process_seconds\tpeak_rss_kib\tcommand
+2.824644238\t54040\ttarget/release/tak-order2-normalized-gate /tmp/tak-silesia/data/mozilla.test --strength 4

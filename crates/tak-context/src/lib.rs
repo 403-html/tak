@@ -205,10 +205,46 @@ pub struct Order2SmoothedModel {
 /// An adaptive order-2 model with a normalized finite-strength parent prior.
 pub struct Order2NormalizedModel {
     parents: Vec<Distribution>,
-    locals: Vec<Option<Box<SparseDistribution>>>,
+    locals: Vec<Option<Box<LocalIncrements>>>,
     history: [u8; 2],
     seen: u8,
     prior_strength: NonZeroU16,
+}
+
+#[derive(Clone)]
+struct LocalIncrements {
+    frequencies: [u16; ALPHABET_SIZE],
+    total: u32,
+}
+
+impl LocalIncrements {
+    fn new() -> Self {
+        Self {
+            frequencies: [0; ALPHABET_SIZE],
+            total: 0,
+        }
+    }
+
+    fn extra_range(&self, symbol: u8) -> (u32, u32) {
+        let index = usize::from(symbol);
+        let low = self.frequencies[..index]
+            .iter()
+            .map(|&frequency| u32::from(frequency))
+            .sum();
+        (low, u32::from(self.frequencies[index]))
+    }
+
+    fn update(&mut self, symbol: u8) {
+        if 256 + self.total >= MAX_TOTAL {
+            self.total = 0;
+            for frequency in &mut self.frequencies {
+                *frequency /= 2;
+                self.total += u32::from(*frequency);
+            }
+        }
+        self.frequencies[usize::from(symbol)] += 1;
+        self.total += 1;
+    }
 }
 
 #[derive(Clone, Default)]
@@ -439,7 +475,7 @@ impl Order2NormalizedModel {
         (self.seen >= 2).then(|| (usize::from(self.history[0]) << 8) | usize::from(self.history[1]))
     }
 
-    fn local(&self) -> Option<&SparseDistribution> {
+    fn local(&self) -> Option<&LocalIncrements> {
         self.local_index()
             .and_then(|context| self.locals[context].as_deref())
     }
@@ -470,23 +506,20 @@ impl ByteModel for Order2NormalizedModel {
             return parent.symbol(value);
         }
         let strength = u32::from(self.prior_strength.get());
-        let local = self.local();
-        let total = (local.map_or(0, |row| row.total) + strength) * parent.total;
-        let mut local_index = 0;
+        let Some(local) = self.local() else {
+            let (symbol, low, high, parent_total) = parent.symbol(value / strength);
+            return (
+                symbol,
+                strength * low,
+                strength * high,
+                strength * parent_total,
+            );
+        };
+        let parent_total = parent.total;
+        let total = (local.total + strength) * parent_total;
         let mut low = 0;
         for symbol in 0_u8..=255 {
-            let local_frequency = local.map_or(0, |row| {
-                let Some(&(candidate, increment)) = row.increments.get(local_index) else {
-                    return 0;
-                };
-                if candidate == symbol {
-                    local_index += 1;
-                    u32::from(increment)
-                } else {
-                    0
-                }
-            });
-            let frequency = local_frequency * parent.total
+            let frequency = u32::from(local.frequencies[usize::from(symbol)]) * parent_total
                 + strength * u32::from(parent.frequencies[usize::from(symbol)]);
             let high = low + frequency;
             if value < high {
@@ -502,7 +535,7 @@ impl ByteModel for Order2NormalizedModel {
         self.parents[parent].update(symbol);
         if let Some(context) = self.local_index() {
             self.locals[context]
-                .get_or_insert_with(|| Box::new(SparseDistribution::default()))
+                .get_or_insert_with(|| Box::new(LocalIncrements::new()))
                 .update(symbol);
         }
         self.history.rotate_left(1);
@@ -710,8 +743,9 @@ mod tests {
     use std::num::NonZeroU16;
 
     use super::{
-        ByteModel, Distribution, Order0Model, Order1Model, Order2Model, Order2NormalizedModel,
-        Order2SmoothedModel, Order3BackoffModel, Order3Model, SparseDistribution,
+        ByteModel, Distribution, LocalIncrements, Order0Model, Order1Model, Order2Model,
+        Order2NormalizedModel, Order2SmoothedModel, Order3BackoffModel, Order3Model,
+        SparseDistribution,
     };
 
     fn exercise(mut model: impl ByteModel) {
@@ -783,6 +817,18 @@ mod tests {
         }
         for value in 0..dense.total {
             assert_eq!(sparse.symbol(value), dense.symbol(value));
+        }
+    }
+
+    #[test]
+    fn dense_local_increments_match_sparse_increments() {
+        let mut dense = LocalIncrements::new();
+        let mut sparse = SparseDistribution::default();
+        for symbol in (0_u8..=255).cycle().take(40_000) {
+            assert_eq!(dense.extra_range(symbol), sparse.extra_range(symbol));
+            assert_eq!(dense.total, sparse.total);
+            dense.update(symbol);
+            sparse.update(symbol);
         }
     }
 

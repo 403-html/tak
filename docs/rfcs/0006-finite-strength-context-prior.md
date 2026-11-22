@@ -1,6 +1,6 @@
 # RFC 0006: Finite-strength context prior
 
-- Status: Development size gate accepted; speed gate pending
+- Status: Development gate accepted; independent validation pending
 - Date: 2026-11-22
 - Scope: Classical research artifact only
 - TAK-C method identifier: None
@@ -75,13 +75,18 @@ A tensor attempt still requires a new RFC that identifies a longer-context
 dependency and representation that the rejected bigram factorization cannot
 express.
 
-## 7. Preliminary decision
+## 7. Development decision
 
 Strength 4 passed the size conditions on all eight development groups. It was
 13.7% smaller than order-2 in aggregate. Group reductions ranged from 2.3% on
 Canterbury binary data to 43.8% on Canterbury source/markup.
 
-Do not accept the complete gate yet. Single-run decoding exceeded two times
-order-2 on four Silesia groups and Canterbury prose. Preserve strength 4 as
-the fixed candidate while investigating the measured symbol-lookup cost. Do
-not retune the strength during decoder optimization.
+The first sparse local-row implementation missed the speed condition. A dense
+local row preserves the exact frequencies and artifact bytes while replacing
+sparse lookup and insertion with direct indexing. After one warm-up and five
+measured repetitions, median group slowdowns were 1.26 to 1.82 times order-2.
+Peak complete-process memory was 54,040 KiB.
+
+Accept the development gate at fixed strength 4. Do not retune the strength.
+The model still requires validation on an untouched corpus before a general
+compression claim or TAK-C method can be considered.

@@ -1,10 +1,10 @@
-# Preliminary gate: finite-strength context prior
+# Accepted development gate: finite-strength context prior
 
 ## Status
 
-RFC 0006 passes its development size conditions at fixed strength 4. The
-decoder-speed condition is pending. This is not a TAK-C method and does not
-authorize tensor work.
+RFC 0006 passes its complete development gate at fixed strength 4 after an
+exact in-memory optimization. This is not a TAK-C method and does not authorize
+tensor work. Independent validation is still required.
 
 ## Method
 
@@ -62,6 +62,48 @@ parent and local distributions. Optimize that measured path without changing
 strength or artifact bytes, then run controlled repetitions and peak-memory
 measurement.
 
+## Decoder optimization
+
+The initial local rows stored only observed symbols. This saved memory but
+required binary search and vector insertion during every hot-context update.
+A dense 256-entry local row uses the same integer counts and rescaling rule.
+It changes no coding probability or artifact byte. Its worst-case frequency
+storage is approximately 34 MiB.
+
+Two alternatives were rejected before selecting dense rows:
+
+- A Fenwick-indexed parent plus binary cumulative search increased lookup and
+  update overhead. Quick Silesia decoding remained approximately 2.1 to 3.1
+  times slower than order-2.
+- Jumping between sparse local entries repeated parent-prefix scans and made
+  executable decoding substantially slower.
+
+The retained decoder also directly inverts the parent distribution when a
+local context has no observations. This is exact because the distribution is
+then only the parent multiplied by strength.
+
+The controlled results use one warm-up and five measured runs per file. Group
+times sum files for each repetition and report the median. Raw results are in
+`benchmarks/reports/raw/2026-11-22-order2-normalized-dense.tsv`; its SHA-256 is
+`2a1c282628281a21100fa886ccc12e5e68e2dc9dd4bae80e1ebfd45158a54974`.
+The separate memory measurement is in
+`benchmarks/reports/raw/2026-11-22-order2-normalized-dense-memory.tsv`.
+
+| Group | Order-2 encode (s) | Normalized encode (s) | Order-2 decode (s) | Normalized decode (s) | Decode slowdown |
+|---|---:|---:|---:|---:|---:|
+| Silesia English text | 0.091 | 0.102 | 0.105 | 0.190 | 1.81x |
+| Silesia source code | 0.172 | 0.202 | 0.210 | 0.383 | 1.82x |
+| Silesia structured document | 0.044 | 0.052 | 0.058 | 0.102 | 1.76x |
+| Silesia executable | 0.553 | 0.605 | 0.659 | 0.990 | 1.50x |
+| Silesia office data | 0.069 | 0.071 | 0.077 | 0.119 | 1.54x |
+| Canterbury prose | 0.102 | 0.119 | 0.132 | 0.228 | 1.72x |
+| Canterbury source/markup | 0.006 | 0.006 | 0.007 | 0.008 | 1.26x |
+| Canterbury binary | 0.078 | 0.083 | 0.087 | 0.126 | 1.44x |
+| Aggregate | 1.137 | 1.247 | 1.359 | 2.144 | 1.58x |
+
+Peak complete-process resident memory was 54,040 KiB on the 5,122,048-byte
+Mozilla partition. Every controlled decode restored the exact input.
+
 ## Distance to project goals
 
 The enwik9 milestones remain unmeasured. Do not extrapolate development data
@@ -72,14 +114,12 @@ gzip produced 730,625 bytes, so this candidate is 6.9% larger and must remove
 6.4% of its current bytes to equal gzip. It is 58.6% larger than xz and must
 remove 37.0% of its bytes to equal xz.
 
-Across all development inputs, the screen measured 6.23 MiB/s encoding and
-3.39 MiB/s decoding. These are about 8 and 59 times below the aspirational 50
-MiB/s and 200 MiB/s targets. Peak memory has not yet been measured for this
-candidate.
+Across all development inputs, the optimized model measured 9.38 MiB/s
+encoding and 5.46 MiB/s decoding. These are about 5 and 37 times below the
+aspirational 50 MiB/s and 200 MiB/s targets. Peak memory is 5.2% of the
+one-gigabyte decoder target.
 
 ## Next step
 
-Keep strength 4 fixed. Optimize exact cumulative-symbol lookup. Reject the
-model if controlled decoding remains above two times order-2 or memory exceeds
-one gigabyte. If it passes, validate on a corpus unused by RFCs 0001 through
-0006.
+Keep strength 4 fixed. Validate on a corpus unused by RFCs 0001 through 0006.
+Do not tune the model on that corpus before evaluating the predeclared gate.
