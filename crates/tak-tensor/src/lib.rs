@@ -2,10 +2,12 @@
 //!
 //! Artifacts use `TKRX`, not TAK-C. This crate makes no compression claim.
 
+mod order2_smoothing;
 mod second_order;
 mod third_order;
 mod third_order_backoff;
 
+pub use order2_smoothing::{decode_order2_smoothed_artifact, encode_order2_smoothed_artifact};
 pub use second_order::{
     Order2TensorDiagnostics, QuantizedOrder2Model, decode_order2_tensor_artifact,
     encode_order2_tensor_artifact,

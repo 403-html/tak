@@ -81,6 +81,12 @@ validation then failed: backoff was larger than order-2 in all three held-out
 groups. The model remains a research artifact, not a TAK-C method or
 authorization for another tensor model.
 
+RFC 0005 tested whether an adaptive order-1 parent could smooth cold order-2
+contexts. The raw-count blend improved Canterbury prose and source/markup, but
+lost on all five Silesia groups and was 4.9% larger in aggregate. It is
+rejected. A future smoothing experiment must normalize the parent prior instead
+of testing more raw-count weights. This result does not authorize tensor work.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console
@@ -98,6 +104,12 @@ Reproduce the RFC 0004 threshold screen with:
 
 ```console
 cargo run --release -p tak-tensor --bin tak-order3-backoff-gate -- input.bin
+```
+
+Reproduce the rejected RFC 0005 smoothing screen with:
+
+```console
+cargo run --release -p tak-tensor --bin tak-order2-smoothing-gate -- input.bin
 ```
 
 ## License

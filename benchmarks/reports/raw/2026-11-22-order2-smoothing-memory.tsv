@@ -1,0 +1,2 @@
+dataset	file	weight	complete_process_seconds	peak_rss_kib	command
+silesia	mozilla.test	1	3.379275675	46708	python3 benchmarks/runners/measure.py --timing /tmp/tks2-memory.tsv --stdout /tmp/tks2-output.tsv target/release/tak-order2-smoothing-gate /tmp/tak-silesia/data/mozilla.test --weight 1
