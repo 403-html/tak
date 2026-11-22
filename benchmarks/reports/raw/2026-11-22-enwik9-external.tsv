@@ -1,0 +1,4 @@
+method\tversion\tcompressed_bytes\tencode_seconds\tdecode_seconds\tencode_peak_rss_kib\tdecode_peak_rss_kib\troundtrip
+gzip-9\t1.13\t322591988\t76.083512546\t10.203521698\t9216\t9216\ttrue
+xz-9\t5.8.1\t215674196\t1146.152265602\t8.843269266\t981120\t1224344\ttrue
+zstd-19\t1.5.7\t235328939\t899.419625699\t4.455469634\t225664\t12032\ttrue

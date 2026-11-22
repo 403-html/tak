@@ -1,0 +1,2 @@
+strength\tinput_bytes\torder2_bytes\tnormalized_bytes\torder2_encode_seconds\torder2_decode_seconds\tnormalized_encode_seconds\tnormalized_decode_seconds\troundtrip\tcomplete_process_seconds\tpeak_rss_kib
+4\t1000000000\t371890796\t368643002\t86.580539\t112.162772\t117.732561\t215.504317\ttrue\t542.350925509\t3665840

@@ -101,6 +101,15 @@ was still 4.5% larger than gzip, 20.2% larger than Zstandard level 19, and
 25.0% larger than xz under matching independent-file accounting. The model
 remains research-only.
 
+The first enwik9 screen is less favorable. Fixed strength 4 produced a
+368,643,002-byte artifact, only 0.87% smaller than order-2. It misses the
+nominal 322,000,000-byte M1 target by 46,643,002 bytes and must remove 12.65%
+of its current bytes to reach M1. Same-input gzip produced 322,591,988 bytes,
+xz produced 215,674,196 bytes, and Zstandard level 19 produced 235,328,939
+bytes. TAK encoded at 8.10 MiB/s and decoded at 4.43 MiB/s in this single-run
+screen. The current non-streaming runner peaked at 3,665,840 KiB, so streaming
+and bounded-memory work are mandatory before codec promotion.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console

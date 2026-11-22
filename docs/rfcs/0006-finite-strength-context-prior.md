@@ -105,3 +105,17 @@ Peak complete-process memory was 9,216 KiB. Every file restored exactly.
 This result validates the classical mechanism on one independent corpus. It
 does not assign a TAK-C method identifier, demonstrate enwik9 milestones, or
 authorize tensor work.
+
+## 9. enwik9 screen
+
+Fixed strength 4 produced a 368,643,002-byte complete artifact on enwik9. It
+was 0.87% smaller than order-2 but missed M1 by 46,643,002 bytes. Encoding was
+8.10 MiB/s and decoding was 4.43 MiB/s in a single measured run.
+
+The result shows that finite-strength smoothing mainly improves cold contexts.
+Its advantage becomes small when one long stream lets order-2 contexts mature.
+Do not retune strength on enwik9 or promote this artifact to TAK-C.
+
+The complete non-streaming runner peaked at 3,665,840 KiB. This does not
+isolate the decoder, but it fails the intended bounded-process-memory behavior.
+Streaming implementation work is required.
