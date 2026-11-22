@@ -1,0 +1,19 @@
+[package]
+name = "tak-cli"
+description = "Command-line interface for TAK experiments"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "tak"
+path = "src/main.rs"
+
+[dependencies]
+tak-codecs = { path = "../tak-codecs" }
+
+[lints]
+workspace = true
+

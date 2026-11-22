@@ -1,0 +1,16 @@
+[package]
+name = "tak-codecs"
+description = "Experimental TAK compression stream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tak-context = { path = "../tak-context" }
+tak-entropy = { path = "../tak-entropy" }
+
+[lints]
+workspace = true
+

@@ -1,0 +1,10 @@
+/target/
+__pycache__/
+*.py[cod]
+*.takc
+benchmarks/datasets/*
+!benchmarks/datasets/README.md
+benchmarks/reports/raw/*
+!benchmarks/reports/raw/.gitkeep
+
+

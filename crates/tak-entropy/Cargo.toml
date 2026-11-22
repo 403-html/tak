@@ -1,0 +1,15 @@
+[package]
+name = "tak-entropy"
+description = "Integer arithmetic coding for TAK experiments"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tak-context = { path = "../tak-context" }
+
+[lints]
+workspace = true
+

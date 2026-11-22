@@ -1,0 +1,12 @@
+[package]
+name = "tak-context"
+description = "Deterministic context models for TAK experiments"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
