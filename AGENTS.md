@@ -81,6 +81,10 @@ proportion to each change. Cross-platform behavior must remain covered by CI.
 - Use Pareto plots for size versus compression speed, decompression speed, and
   peak memory when enough methods exist.
 - Label quick checks and single-sample runs as non-publishable screening data.
+- In research handoffs, include a concrete distance-to-goal example. Use
+  same-dataset measurements when possible. If an enwik9 milestone has not been
+  measured, say that it is unmeasured and do not extrapolate from another
+  corpus.
 
 Follow `benchmarks/methodology/phase-1.md` for controlled comparisons.
 

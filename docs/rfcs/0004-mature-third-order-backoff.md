@@ -1,6 +1,6 @@
 # RFC 0004: Mature third-order context backoff
 
-- Status: Classical gate accepted; tensor scope unchanged
+- Status: Development gate accepted; held-out validation rejected
 - Date: 2026-11-22
 - Scope: Classical research artifact only
 - TAK-C method identifier: None
@@ -137,3 +137,21 @@ the current Pareto point. Further changes require a new measured bottleneck.
 A row-index cache and four-entry inline storage were also rejected. The cache
 added a random vector access and did not meet the speed limit. Inline storage
 increased row size and peak memory without a consistent speed benefit.
+
+## 10. Held-out validation
+
+Validate the fixed threshold 64 on the Canterbury corpus without changing the
+model or threshold. Group independently compressed files as prose,
+source/markup, and binary data. The validation passes only if backoff is at
+least 2% smaller than order-2 on two of three groups, stays below two times the
+order-2 decode time, remains below one gigabyte, and restores every file.
+
+Reject held-out validation. Backoff was larger than order-2 in every group:
+3.1% on prose, 0.1% on source/markup, and 1.8% on binary data. Binary decoding
+was 2.25 times slower. All files restored exactly, and peak process memory was
+16,808 KiB.
+
+Threshold 64 therefore overfits the Silesia development groups. Preserve the
+artifact and negative validation result. Do not promote this model to TAK-C,
+retune the threshold on Canterbury, or use this result to authorize a tensor
+model.

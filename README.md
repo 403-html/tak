@@ -76,9 +76,10 @@ factorization loss.
 RFC 0004 recovered a small size benefit by using order-3 only for mature
 contexts. Threshold 64 beat order-2 by 2.2% to 3.7% on three development
 groups. An exact sparse gap decoder reduced median slowdown to 1.30 to 1.78
-times, so the classical development gate now passes. Threshold 64 still needs
-independent held-out validation. This is not a TAK-C method or authorization
-for another tensor model.
+times, so the classical development gate passed. Independent Canterbury
+validation then failed: backoff was larger than order-2 in all three held-out
+groups. The model remains a research artifact, not a TAK-C method or
+authorization for another tensor model.
 
 Reproduce the RFC 0002 tensor artifact with:
 
