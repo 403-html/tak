@@ -1,6 +1,6 @@
 # RFC 0001: Quantized bigram factorization screening experiment
 
-- Status: Experimental
+- Status: Rejected
 - Date: 2026-11-22
 - Scope: Research artifact only
 - TAK-C method identifier: None
@@ -172,7 +172,14 @@ The implementation MUST include:
 
 ## 11. Decision
 
-The research artifact and the first development-corpus measurement exist. No
-decision has been made. Measurements on all required held-out dataset groups
-are required before this RFC can be accepted or rejected.
+Reject the two-core byte-bigram factorization as a TAK codec direction. Ranks
+1, 2, 4, and 8 failed to beat the adaptive order-1 control on `enwik8` and on
+five Silesia files covering text, source, structured documents, executables,
+and office data. The closest result was still 9.5% larger than the control.
+
+Diagnostics show that 16-bit core quantization and integer frequency rounding
+are not the primary loss. The factorized bigram model is the limiting stage.
+Preserve the research artifact for reproducibility. Do not assign it a TAK-C
+method identifier. A future longer-context TT or MPS proposal requires a new
+RFC and a mechanism that this two-core model cannot represent.
 
