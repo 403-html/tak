@@ -91,8 +91,15 @@ RFC 0006 applies that normalization with a fixed prior mass. Strength 4 is
 13.7% smaller than order-2 in aggregate and passes the size condition on all
 eight development groups. Dense local rows reduced controlled decoder slowdown
 to 1.26–1.82 times with 54,040 KiB peak process memory, so the development gate
-passes. Independent validation is still required. This is not yet a validated
-codec claim or a TAK-C method.
+passes. At that stage, independent validation was still required before any
+codec claim or TAK-C method could be considered.
+
+Fixed strength 4 subsequently passed an untouched Calgary validation: it was
+19.6% to 38.8% smaller than order-2 across all three groups, decoded 1.48 to
+1.73 times slower, and used 9,216 KiB peak process memory. Its complete size
+was still 4.5% larger than gzip, 20.2% larger than Zstandard level 19, and
+25.0% larger than xz under matching independent-file accounting. The model
+remains research-only.
 
 Reproduce the RFC 0002 tensor artifact with:
 

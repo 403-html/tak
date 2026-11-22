@@ -1,0 +1,2 @@
+complete_process_seconds\tpeak_rss_kib\tcommand
+0.380861223\t9216\ttarget/release/tak-order2-normalized-gate /tmp/tak-calgary/book1 --strength 4

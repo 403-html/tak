@@ -1,6 +1,6 @@
 # RFC 0006: Finite-strength context prior
 
-- Status: Development gate accepted; independent validation pending
+- Status: Independent validation accepted; research artifact only
 - Date: 2026-11-22
 - Scope: Classical research artifact only
 - TAK-C method identifier: None
@@ -90,3 +90,18 @@ Peak complete-process memory was 54,040 KiB.
 Accept the development gate at fixed strength 4. Do not retune the strength.
 The model still requires validation on an untouched corpus before a general
 compression claim or TAK-C method can be considered.
+
+## 8. Independent validation
+
+Validate fixed strength 4 on the untouched Calgary corpus with files grouped
+as prose/reference, technical/source, and binary. Require a 2% size reduction
+on two groups, no aggregate regression, no group above two times order-2
+decoding, less than one gigabyte peak process memory, and exact restoration.
+
+Accept validation. Strength 4 reduced complete size by 19.6%, 38.8%, and 26.5%
+across the three groups. Median decoder slowdowns were 1.48 to 1.73 times.
+Peak complete-process memory was 9,216 KiB. Every file restored exactly.
+
+This result validates the classical mechanism on one independent corpus. It
+does not assign a TAK-C method identifier, demonstrate enwik9 milestones, or
+authorize tensor work.
