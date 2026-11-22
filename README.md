@@ -1,5 +1,7 @@
 # TAK Pack
 
+[Engineering and research guide](AGENTS.md)
+
 TAK Pack is an experimental, lossless compression project. The research goal
 is to test whether compact tensor-network models can improve practical lossless
 compression. The project does not yet claim that they can.
@@ -54,6 +56,8 @@ cargo run --release -p tak-tensor --bin tak-tensor-experiment -- \
 By default, the first 90% of the input trains the model and the last 10% is the
 held-out compression input. Use `--train-bytes` to record an exact split. The
 reported artifact size includes the header, quantized cores, and payload.
+The output also separates full-precision factorization loss, core quantization
+loss, and integer-frequency rounding loss in bits per byte.
 
 ## License
 

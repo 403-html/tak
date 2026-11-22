@@ -51,6 +51,30 @@ decompression processes peaked at 20,384 KiB and 15,648 KiB, respectively.
 These RSS values are not directly comparable until the harness isolates model
 training from decoding.
 
+## Loss attribution
+
+A follow-up diagnostic measured held-out cross-entropy at three stages. The
+calculation aggregates the 65,536 possible byte bigrams and uses the same
+add-one smoothing mass as the integer model.
+
+| Rank | Full-precision factorization (bpb) | Quantized cores (bpb) | Integer frequencies (bpb) |
+|---:|---:|---:|---:|
+| 1 | 5.158928 | 5.143281 | 5.145489 |
+| 2 | 5.014667 | 4.999019 | 5.005542 |
+| 4 | 4.804840 | 4.789923 | 4.794209 |
+| 8 | 4.518284 | 4.502694 | 4.504311 |
+
+At rank 8, 16-bit core quantization improves held-out cross-entropy by 0.015590
+bits per byte. This small improvement is consistent with regularization or
+rounding noise. Integer frequency rounding then costs 0.001617 bits per byte.
+Neither stage explains the gap to the adaptive order-1 control.
+
+The physical rank-8 artifact uses 4.510887 bits per input byte. The difference
+from the 4.504311-bit integer model is 0.006576 bits per byte and includes the
+model, header, and arithmetic-coder finalization. The control's physical stream
+uses 3.882900 bits per byte. The dominant deficit is therefore the predictive
+model, not quantization, metadata, or entropy-coder overhead.
+
 ## Finding
 
 Higher tested ranks monotonically improved compressed size, and rank 8 decoded
@@ -65,9 +89,10 @@ test longer-context TT or MPS models.
 
 ## Next experiment
 
-Before increasing rank, measure per-context cross-entropy and quantization loss
-to separate factorization error from integer normalization error. Then run the
-same fixed ranks on source, JSON, logs, documents, and binary held-out data. Do
-not attempt a higher-order TT unless at least one domain shows a credible gain
-over its classical control.
+Run the same fixed ranks on source, JSON, logs, documents, and binary held-out
+data. Do not spend effort on wider core values: 16-bit quantization is not the
+limiting factor in this result. Do not attempt a higher-order TT unless at least
+one domain shows a credible gain over its classical control or a longer-context
+hypothesis states a specific mechanism that the bigram factorization cannot
+represent.
 

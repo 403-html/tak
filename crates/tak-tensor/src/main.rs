@@ -44,7 +44,8 @@ fn run() -> Result<(), String> {
     }
     let (training, test) = bytes.split_at(train_bytes);
     let start = Instant::now();
-    let model = QuantizedModel::train(training, rank, iterations);
+    let (model, diagnostics) =
+        QuantizedModel::train_with_diagnostics(training, test, rank, iterations);
     let training_seconds = start.elapsed().as_secs_f64();
     let start = Instant::now();
     let artifact = encode_artifact(test, &model);
@@ -64,17 +65,20 @@ fn run() -> Result<(), String> {
         fs::write(path, &artifact).map_err(|error| error.to_string())?;
     }
     println!(
-        "rank\ttrain_bytes\ttest_bytes\titerations\tmodel_bytes\tartifact_bytes\torder1_bytes\ttraining_seconds\tencode_seconds\tdecode_seconds\troundtrip"
+        "rank\ttrain_bytes\ttest_bytes\titerations\tmodel_bytes\tartifact_bytes\torder1_bytes\tfull_precision_bpb\tquantized_core_bpb\tinteger_frequency_bpb\ttraining_seconds\tencode_seconds\tdecode_seconds\troundtrip"
     );
     println!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{training_seconds:.6}\t{encode_seconds:.6}\t{decode_seconds:.6}\ttrue",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{training_seconds:.6}\t{encode_seconds:.6}\t{decode_seconds:.6}\ttrue",
         model.rank(),
         training.len(),
         test.len(),
         iterations,
         model.model_bytes(),
         artifact.len(),
-        baseline.len()
+        baseline.len(),
+        diagnostics.full_precision_bits_per_byte,
+        diagnostics.quantized_core_bits_per_byte,
+        diagnostics.integer_frequency_bits_per_byte
     );
     Ok(())
 }

@@ -20,6 +20,17 @@ pub struct QuantizedModel {
     context: Option<u8>,
 }
 
+/// Cross-entropy diagnostics for one held-out byte sequence.
+#[derive(Debug, Clone, Copy)]
+pub struct Diagnostics {
+    /// Bits per input byte before core quantization and frequency rounding.
+    pub full_precision_bits_per_byte: f64,
+    /// Bits per input byte after core quantization but before frequency rounding.
+    pub quantized_core_bits_per_byte: f64,
+    /// Bits per input byte from the exact integer frequencies used by the coder.
+    pub integer_frequency_bits_per_byte: f64,
+}
+
 #[derive(Clone)]
 struct Row {
     frequencies: [u16; ALPHABET],
@@ -67,14 +78,40 @@ impl QuantizedModel {
     #[must_use]
     pub fn train(training: &[u8], rank: usize, iterations: usize) -> Self {
         assert!((1..=MAX_RANK).contains(&rank));
-        let counts = bigram_counts(training);
-        let (mut left, mut right) = initialize(rank);
-        for _ in 0..iterations {
-            update_right(&counts, &left, &mut right, rank);
-            update_left(&counts, &mut left, &right, rank);
-        }
+        let (left, right) = fit(training, rank, iterations);
         let (left, right) = quantize(&left, &right, rank);
         Self::from_cores(rank, left, right).expect("trained cores have valid dimensions")
+    }
+
+    /// Trains a model and measures each lossy modeling stage on held-out bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `rank` is zero or greater than eight.
+    #[must_use]
+    pub fn train_with_diagnostics(
+        training: &[u8],
+        held_out: &[u8],
+        rank: usize,
+        iterations: usize,
+    ) -> (Self, Diagnostics) {
+        assert!((1..=MAX_RANK).contains(&rank));
+        let (float_left, float_right) = fit(training, rank, iterations);
+        let full_precision_bits_per_byte =
+            float_bits_per_byte(held_out, &float_left, &float_right, rank);
+        let (left, right) = quantize(&float_left, &float_right, rank);
+        let quantized_core_bits_per_byte = quantized_bits_per_byte(held_out, &left, &right, rank);
+        let model =
+            Self::from_cores(rank, left, right).expect("trained cores have valid dimensions");
+        let integer_frequency_bits_per_byte = integer_bits_per_byte(held_out, &model.rows);
+        (
+            model,
+            Diagnostics {
+                full_precision_bits_per_byte,
+                quantized_core_bits_per_byte,
+                integer_frequency_bits_per_byte,
+            },
+        )
     }
 
     /// Returns the tensor-network bond dimension.
@@ -239,6 +276,16 @@ fn bigram_counts(input: &[u8]) -> Vec<f64> {
     counts
 }
 
+fn fit(training: &[u8], rank: usize, iterations: usize) -> (Vec<f64>, Vec<f64>) {
+    let counts = bigram_counts(training);
+    let (mut left, mut right) = initialize(rank);
+    for _ in 0..iterations {
+        update_right(&counts, &left, &mut right, rank);
+        update_left(&counts, &mut left, &right, rank);
+    }
+    (left, right)
+}
+
 fn initialize(rank: usize) -> (Vec<f64>, Vec<f64>) {
     let mut left = vec![0.0; ALPHABET * rank];
     let mut right = vec![0.0; rank * ALPHABET];
@@ -365,6 +412,93 @@ fn build_rows(left: &[u16], right: &[u16], rank: usize) -> Vec<Row> {
         .collect()
 }
 
+#[allow(clippy::cast_precision_loss)]
+fn float_bits_per_byte(input: &[u8], left: &[f64], right: &[f64], rank: usize) -> f64 {
+    if input.is_empty() {
+        return 0.0;
+    }
+    let counts = bigram_counts(input);
+    let mut bits = 8.0;
+    for context in 0..ALPHABET {
+        let mut scores = [0.0_f64; ALPHABET];
+        for symbol in 0..ALPHABET {
+            scores[symbol] = (0..rank)
+                .map(|component| {
+                    left[context * rank + component] * right[component * ALPHABET + symbol]
+                })
+                .sum();
+        }
+        let score_total: f64 = scores.iter().sum();
+        for (symbol, score) in scores.into_iter().enumerate() {
+            let count = counts[context * ALPHABET + symbol];
+            if count != 0.0 {
+                let probability = if score_total == 0.0 {
+                    1.0 / ALPHABET as f64
+                } else {
+                    (1.0 + score * (MAX_TOTAL - ALPHABET as u64) as f64 / score_total)
+                        / MAX_TOTAL as f64
+                };
+                bits -= count * probability.log2();
+            }
+        }
+    }
+    bits / input.len() as f64
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn quantized_bits_per_byte(input: &[u8], left: &[u16], right: &[u16], rank: usize) -> f64 {
+    if input.is_empty() {
+        return 0.0;
+    }
+    let counts = bigram_counts(input);
+    let mut bits = 8.0;
+    for context in 0..ALPHABET {
+        let mut scores = [0_u64; ALPHABET];
+        for symbol in 0..ALPHABET {
+            scores[symbol] = (0..rank)
+                .map(|component| {
+                    u64::from(left[context * rank + component])
+                        * u64::from(right[component * ALPHABET + symbol])
+                })
+                .sum();
+        }
+        let score_total: u64 = scores.iter().sum();
+        for (symbol, score) in scores.into_iter().enumerate() {
+            let count = counts[context * ALPHABET + symbol];
+            if count != 0.0 {
+                let probability = if score_total == 0 {
+                    1.0 / ALPHABET as f64
+                } else {
+                    (1.0 + score as f64 * (MAX_TOTAL - ALPHABET as u64) as f64 / score_total as f64)
+                        / MAX_TOTAL as f64
+                };
+                bits -= count * probability.log2();
+            }
+        }
+    }
+    bits / input.len() as f64
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn integer_bits_per_byte(input: &[u8], rows: &[Row]) -> f64 {
+    if input.is_empty() {
+        return 0.0;
+    }
+    let counts = bigram_counts(input);
+    let mut bits = 8.0;
+    for context in 0..ALPHABET {
+        let row = &rows[context];
+        for symbol in 0..ALPHABET {
+            let count = counts[context * ALPHABET + symbol];
+            if count != 0.0 {
+                let probability = f64::from(row.frequencies[symbol]) / f64::from(row.total);
+                bits -= count * probability.log2();
+            }
+        }
+    }
+    bits / input.len() as f64
+}
+
 fn read_u64(bytes: &[u8]) -> u64 {
     u64::from_le_bytes(bytes.try_into().expect("fixed slice length"))
 }
@@ -398,6 +532,19 @@ mod tests {
             );
             assert_eq!(model.model_bytes(), rank * 1_024);
         }
+    }
+
+    #[test]
+    fn diagnostics_are_finite_and_match_coder_scale() {
+        let training = b"the quick brown fox jumps over the lazy dog".repeat(50);
+        let held_out = b"the quick fox jumps over the dog".repeat(20);
+        let (model, diagnostics) =
+            QuantizedModel::train_with_diagnostics(&training, &held_out, 2, 5);
+        assert!(diagnostics.full_precision_bits_per_byte.is_finite());
+        assert!(diagnostics.quantized_core_bits_per_byte.is_finite());
+        assert!(diagnostics.integer_frequency_bits_per_byte.is_finite());
+        let artifact = encode_artifact(&held_out, &model);
+        assert_eq!(decode_artifact(&artifact, 10_000).unwrap(), held_out);
     }
 
     #[test]
