@@ -88,11 +88,12 @@ pub fn decode(
         if code < low || code > high {
             return Err(DecodeError::InvalidInterval);
         }
-        let total = u64::from(model.total());
+        let model_total = model.total();
+        let total = u64::from(model_total);
         let width = high - low + 1;
         let scaled = ((code - low + 1) * total - 1) / width;
         let scaled = u32::try_from(scaled).map_err(|_| DecodeError::InvalidInterval)?;
-        if scaled >= model.total() {
+        if scaled >= model_total {
             return Err(DecodeError::InvalidInterval);
         }
         let (symbol, cum_low, cum_high, actual_total) = model.symbol(scaled);

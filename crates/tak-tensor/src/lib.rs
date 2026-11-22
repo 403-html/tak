@@ -4,12 +4,14 @@
 
 mod second_order;
 mod third_order;
+mod third_order_backoff;
 
 pub use second_order::{
     Order2TensorDiagnostics, QuantizedOrder2Model, decode_order2_tensor_artifact,
     encode_order2_tensor_artifact,
 };
 pub use third_order::{decode_order3_artifact, encode_order3_artifact};
+pub use third_order_backoff::{decode_order3_backoff_artifact, encode_order3_backoff_artifact};
 
 use tak_context::{ByteModel, Order2Model};
 

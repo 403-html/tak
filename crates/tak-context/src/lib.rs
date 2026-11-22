@@ -2,7 +2,9 @@
 //!
 //! Model updates use integers only. Encoder and decoder updates are identical.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::hash::{BuildHasherDefault, Hasher};
+use std::num::NonZeroU16;
 
 const ALPHABET_SIZE: usize = 256;
 const MAX_TOTAL: u32 = 16_384;
@@ -10,6 +12,30 @@ const START_CONTEXT: usize = 256;
 const ORDER2_SINGLE_BASE: usize = 65_536;
 const ORDER2_START_CONTEXT: usize = ORDER2_SINGLE_BASE + ALPHABET_SIZE;
 const ORDER2_CONTEXT_COUNT: usize = ORDER2_START_CONTEXT + 1;
+
+type ContextMap<V> = HashMap<u32, V, BuildHasherDefault<ContextHasher>>;
+
+#[derive(Default)]
+struct ContextHasher(u64);
+
+impl Hasher for ContextHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        // Context maps use u32 keys, so this path is defensive only.
+        let mut fallback = DefaultHasher::new();
+        fallback.write(bytes);
+        self.0 = fallback.finish();
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        // Odd multiplication is injective before truncation and spreads the
+        // sequential byte-context keys across the table without keyed hashing.
+        self.0 = u64::from(value).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
 
 /// Supplies cumulative integer frequencies to an entropy coder.
 pub trait ByteModel {
@@ -241,24 +267,93 @@ impl SparseDistribution {
 /// bytes for every observed three-byte context.
 #[derive(Default)]
 pub struct Order3Model {
-    distributions: HashMap<u32, SparseDistribution>,
+    distributions: ContextMap<SparseDistribution>,
     history: [u8; 3],
     seen: u8,
 }
 
 impl Order3Model {
     fn context(&self) -> u32 {
-        match self.seen {
-            0 => 0,
-            1 => 0x0100_0000 | u32::from(self.history[2]),
-            2 => 0x0200_0000 | (u32::from(self.history[1]) << 8) | u32::from(self.history[2]),
-            _ => {
-                0x0300_0000
-                    | (u32::from(self.history[0]) << 16)
-                    | (u32::from(self.history[1]) << 8)
-                    | u32::from(self.history[2])
-            }
+        context_key(self.history, self.seen)
+    }
+}
+
+fn context_key(history: [u8; 3], seen: u8) -> u32 {
+    match seen {
+        0 => 0,
+        1 => 0x0100_0000 | u32::from(history[2]),
+        2 => 0x0200_0000 | (u32::from(history[1]) << 8) | u32::from(history[2]),
+        _ => {
+            0x0300_0000
+                | (u32::from(history[0]) << 16)
+                | (u32::from(history[1]) << 8)
+                | u32::from(history[2])
         }
+    }
+}
+
+/// An adaptive order-3 model that backs off to order-2 for rare contexts.
+///
+/// Both component models update after every byte. The order-3 distribution is
+/// selected only after its context has accumulated `min_observations` updates.
+pub struct Order3BackoffModel {
+    order2: Order2Model,
+    order3: ContextMap<SparseDistribution>,
+    history: [u8; 3],
+    seen: u8,
+    min_observations: NonZeroU16,
+}
+
+impl Order3BackoffModel {
+    /// Creates a model with a deterministic context-selection threshold.
+    #[must_use]
+    pub fn new(min_observations: NonZeroU16) -> Self {
+        Self {
+            order2: Order2Model::default(),
+            order3: ContextMap::default(),
+            history: [0; 3],
+            seen: 0,
+            min_observations,
+        }
+    }
+
+    fn selected_order3(&self) -> Option<&SparseDistribution> {
+        if self.seen < 3 {
+            return None;
+        }
+        self.order3
+            .get(&context_key(self.history, self.seen))
+            .filter(|row| row.total >= u32::from(self.min_observations.get()))
+    }
+}
+
+impl ByteModel for Order3BackoffModel {
+    fn range(&self, symbol: u8) -> (u32, u32, u32) {
+        self.selected_order3()
+            .map_or_else(|| self.order2.range(symbol), |row| row.range(symbol))
+    }
+
+    fn symbol(&self, value: u32) -> (u8, u32, u32, u32) {
+        self.selected_order3()
+            .map_or_else(|| self.order2.symbol(value), |row| row.symbol(value))
+    }
+
+    fn update(&mut self, symbol: u8) {
+        self.order2.update(symbol);
+        if self.seen >= 3 {
+            self.order3
+                .entry(context_key(self.history, self.seen))
+                .or_default()
+                .update(symbol);
+        }
+        self.history.rotate_left(1);
+        self.history[2] = symbol;
+        self.seen = self.seen.saturating_add(1).min(3);
+    }
+
+    fn total(&self) -> u32 {
+        self.selected_order3()
+            .map_or_else(|| self.order2.total(), |row| 256 + row.total)
     }
 }
 
@@ -350,9 +445,11 @@ impl ByteModel for Order2Model {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU16;
+
     use super::{
-        ByteModel, Distribution, Order0Model, Order1Model, Order2Model, Order3Model,
-        SparseDistribution,
+        ByteModel, Distribution, Order0Model, Order1Model, Order2Model, Order3BackoffModel,
+        Order3Model, SparseDistribution,
     };
 
     fn exercise(mut model: impl ByteModel) {
@@ -396,5 +493,11 @@ mod tests {
             sparse.update(symbol);
             dense.update(symbol);
         }
+    }
+
+    #[test]
+    fn order_3_backoff_ranges_remain_valid() {
+        let threshold = NonZeroU16::new(4).unwrap();
+        exercise(Order3BackoffModel::new(threshold));
     }
 }

@@ -6,5 +6,6 @@ benchmarks/datasets/*
 !benchmarks/datasets/README.md
 benchmarks/reports/raw/*
 !benchmarks/reports/raw/.gitkeep
+!benchmarks/reports/raw/*.tsv
 
 

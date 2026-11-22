@@ -73,6 +73,12 @@ another tensor implementation. A new tensor structure still requires a new
 dependency mechanism and a stop condition that address RFC 0002's measured
 factorization loss.
 
+RFC 0004 recovered a small size benefit by using order-3 only for mature
+contexts. Threshold 64 beat order-2 by 2.2% to 3.7% on three development
+groups, but the decoder remained 2.17 to 2.54 times slower. The classical
+implementation is therefore retained as a mixed research result, not a TAK-C
+method or authorization for another tensor model.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console
@@ -84,6 +90,12 @@ Run the RFC 0003 classical gate with:
 
 ```console
 cargo run --release -p tak-tensor --bin tak-order3-gate -- input.bin
+```
+
+Reproduce the RFC 0004 threshold screen with:
+
+```console
+cargo run --release -p tak-tensor --bin tak-order3-backoff-gate -- input.bin
 ```
 
 ## License
