@@ -216,24 +216,39 @@ impl SparseDistribution {
     fn symbol(&self, value: u32) -> (u8, u32, u32, u32) {
         let total = 256 + self.total;
         let mut low = 0;
-        let mut increment_index = 0;
-        for symbol in 0_u16..=255 {
-            let symbol = u8::try_from(symbol).expect("symbol is at most 255");
-            let increment = self
-                .increments
-                .get(increment_index)
-                .filter(|(candidate, _)| *candidate == symbol)
-                .map_or(0, |(_, increment)| {
-                    increment_index += 1;
-                    *increment
-                });
+        let mut next_symbol = 0_u32;
+        for &(symbol, increment) in &self.increments {
+            let symbol = u32::from(symbol);
+            let gap = symbol - next_symbol;
+            if value < low + gap {
+                let symbol = next_symbol + value - low;
+                return (
+                    u8::try_from(symbol).expect("implicit symbol is at most 255"),
+                    value,
+                    value + 1,
+                    total,
+                );
+            }
+            low += gap;
             let high = low + 1 + u32::from(increment);
             if value < high {
-                return (symbol, low, high, total);
+                return (
+                    u8::try_from(symbol).expect("stored symbol is at most 255"),
+                    low,
+                    high,
+                    total,
+                );
             }
             low = high;
+            next_symbol = symbol + 1;
         }
-        unreachable!("value is below the sparse distribution total")
+        let symbol = next_symbol + value - low;
+        (
+            u8::try_from(symbol).expect("trailing implicit symbol is at most 255"),
+            value,
+            value + 1,
+            total,
+        )
     }
 
     fn update(&mut self, symbol: u8) {
@@ -486,12 +501,25 @@ mod tests {
     fn sparse_distribution_matches_dense_distribution() {
         let mut sparse = SparseDistribution::default();
         let mut dense = Distribution::new();
+        for symbol in [0, 0, 7, 7, 7, 200, 255] {
+            sparse.update(symbol);
+            dense.update(symbol);
+        }
+        for value in 0..dense.total {
+            assert_eq!(sparse.symbol(value), dense.symbol(value));
+        }
+
+        let mut sparse = SparseDistribution::default();
+        let mut dense = Distribution::new();
         for symbol in (0_u8..=255).cycle().take(40_000) {
             assert_eq!(sparse.range(symbol), dense.range(symbol));
             let (low, _, _) = dense.range(symbol);
             assert_eq!(sparse.symbol(low), dense.symbol(low));
             sparse.update(symbol);
             dense.update(symbol);
+        }
+        for value in 0..dense.total {
+            assert_eq!(sparse.symbol(value), dense.symbol(value));
         }
     }
 

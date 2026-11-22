@@ -1,6 +1,6 @@
 # RFC 0004: Mature third-order context backoff
 
-- Status: Size hypothesis accepted; engineering gate rejected
+- Status: Classical gate accepted; tensor scope unchanged
 - Date: 2026-11-22
 - Scope: Classical research artifact only
 - TAK-C method identifier: None
@@ -113,18 +113,27 @@ the complete artifact 3.7% smaller on source code, 2.2% smaller on structured
 documents, and 2.5% smaller on executable data. It was 1.6% larger on English
 text and 0.2% larger on office data.
 
-Reject the implementation as a practical codec. After one warm-up and five
-measured repetitions, median decoding was 2.17 to 2.54 times slower than
-order-2. Every input exceeded the two-times limit. Peak complete-process memory
-was at most 130,868 KiB, and every artifact restored its input exactly.
+The initial implementation failed the speed condition. Its sparse decoder
+scanned all 256 symbols even though most contexts stored four or fewer distinct
+continuations. An exact gap decoder now iterates only the stored entries and
+computes ranges for implicit unit-frequency symbols directly. It does not
+change any probability or artifact byte.
 
-The size result is evidence that mature third-order contexts carry useful
-information on three development domains. It does not authorize a tensor
-model. The speed result shows that maintaining both adaptive models and sparse
-context state is too expensive in this implementation.
+Accept the classical gate after this optimization. After one warm-up and five
+measured repetitions, median decoding was 1.30 to 1.78 times slower than
+order-2. Peak complete-process memory was at most 130,872 KiB. Every artifact
+restored its input exactly.
+
+The result is development-corpus evidence that mature third-order contexts
+carry useful information on three domains. It does not authorize a tensor
+model or a TAK-C method identifier. Threshold 64 still requires validation on
+an independent held-out corpus.
 
 A two-level direct context table was also rejected. It preserved artifact
 bytes but increased peak memory to as much as 231,852 KiB and decoded more
-slowly than the deterministic hash map. Preserve the hash implementation as
-the reproducible control. Do not add more context-model complexity until a
-profile identifies a change that can meet the speed gate.
+slowly than the deterministic hash map. Retain the hash map and gap decoder as
+the current Pareto point. Further changes require a new measured bottleneck.
+
+A row-index cache and four-entry inline storage were also rejected. The cache
+added a random vector access and did not meet the speed limit. Inline storage
+increased row size and peak memory without a consistent speed benefit.
