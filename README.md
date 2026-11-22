@@ -10,6 +10,7 @@ The repository currently contains the Phase 1 classical control experiment:
 
 - a deterministic integer arithmetic coder;
 - adaptive order-0 and order-1 byte models;
+- a research-only adaptive order-2 control;
 - a small, versioned experimental `.takc` stream;
 - exact round-trip and malformed-input tests; and
 - a benchmark command that reports size and wall-clock throughput.
@@ -60,7 +61,13 @@ reported artifact size includes the header, quantized cores, and payload.
 The output also separates full-precision factorization loss, core quantization
 loss, and integer-frequency rounding loss in bits per byte.
 
+RFC 0002 passed its classical gate: two-byte context improves complete size on
+the current development corpus. Its proposed three-core tensor train is not yet
+implemented and has no TAK-C method identifier.
+
 ## License
 
 Licensed under Apache-2.0.
+
+Copyright 2026 Tymoteusz "403-html" Stępień. See [NOTICE](NOTICE).
 

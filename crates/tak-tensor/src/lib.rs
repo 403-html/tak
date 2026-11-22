@@ -2,13 +2,14 @@
 //!
 //! Artifacts use `TKRX`, not TAK-C. This crate makes no compression claim.
 
-use tak_context::ByteModel;
+use tak_context::{ByteModel, Order2Model};
 
 const ALPHABET: usize = 256;
 const MAX_RANK: usize = 8;
 const MAX_TOTAL: u64 = 16_384;
 const HEADER_LEN: usize = 28;
 const MAGIC: &[u8; 4] = b"TKRX";
+const ORDER2_MAGIC: &[u8; 4] = b"TKO2";
 
 /// A quantized two-core bigram model.
 #[derive(Clone)]
@@ -268,6 +269,56 @@ pub fn decode_artifact(artifact: &[u8], max_output: u64) -> Result<Vec<u8>, Erro
     Ok(output)
 }
 
+/// Encodes the complete adaptive order-2 research control artifact.
+#[must_use]
+pub fn encode_order2_artifact(input: &[u8]) -> Vec<u8> {
+    let payload = tak_entropy::encode(input, Order2Model::default());
+    let mut output = Vec::with_capacity(HEADER_LEN + payload.len());
+    output.extend_from_slice(ORDER2_MAGIC);
+    output.extend_from_slice(&[0, 0, 0, 0]);
+    output.extend_from_slice(&(input.len() as u64).to_le_bytes());
+    output.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    output.extend_from_slice(&crc32(input).to_le_bytes());
+    output.extend_from_slice(&payload);
+    output
+}
+
+/// Decodes the complete adaptive order-2 research control artifact.
+///
+/// # Errors
+///
+/// Returns an error for invalid fields, excessive output, an invalid payload,
+/// or a checksum mismatch.
+pub fn decode_order2_artifact(artifact: &[u8], max_output: u64) -> Result<Vec<u8>, Error> {
+    if artifact.len() < HEADER_LEN
+        || &artifact[..4] != ORDER2_MAGIC
+        || artifact[4..8] != [0, 0, 0, 0]
+    {
+        return Err(Error::InvalidArtifact);
+    }
+    let output_len = read_u64(&artifact[8..16]);
+    if output_len > max_output {
+        return Err(Error::OutputLimitExceeded);
+    }
+    let payload_len =
+        usize::try_from(read_u64(&artifact[16..24])).map_err(|_| Error::InvalidArtifact)?;
+    if artifact.len()
+        != HEADER_LEN
+            .checked_add(payload_len)
+            .ok_or(Error::InvalidArtifact)?
+    {
+        return Err(Error::InvalidArtifact);
+    }
+    let expected_crc = u32::from_le_bytes([artifact[24], artifact[25], artifact[26], artifact[27]]);
+    let output_len = usize::try_from(output_len).map_err(|_| Error::InvalidArtifact)?;
+    let output = tak_entropy::decode(&artifact[HEADER_LEN..], output_len, Order2Model::default())
+        .map_err(|_| Error::InvalidPayload)?;
+    if crc32(&output) != expected_crc {
+        return Err(Error::ChecksumMismatch);
+    }
+    Ok(output)
+}
+
 fn bigram_counts(input: &[u8]) -> Vec<f64> {
     let mut counts = vec![0.0; ALPHABET * ALPHABET];
     for pair in input.windows(2) {
@@ -517,7 +568,10 @@ fn crc32(bytes: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{QuantizedModel, decode_artifact, encode_artifact};
+    use super::{
+        QuantizedModel, decode_artifact, decode_order2_artifact, encode_artifact,
+        encode_order2_artifact,
+    };
 
     #[test]
     fn every_experiment_rank_round_trips() {
@@ -565,5 +619,20 @@ mod tests {
             assert!(result.is_ok());
             assert!(result.unwrap().is_err());
         }
+    }
+
+    #[test]
+    fn order_2_control_round_trips_and_rejects_truncation() {
+        let input = b"two-byte contexts can distinguish these bytes".repeat(100);
+        let artifact = encode_order2_artifact(&input);
+        assert_eq!(
+            decode_order2_artifact(&artifact, input.len() as u64).unwrap(),
+            input
+        );
+        assert!(decode_order2_artifact(&artifact, 10).is_err());
+        assert!(decode_order2_artifact(&artifact[..artifact.len() - 1], u64::MAX).is_err());
+        let mut corrupt = artifact;
+        corrupt[24] ^= 1;
+        assert!(decode_order2_artifact(&corrupt, u64::MAX).is_err());
     }
 }

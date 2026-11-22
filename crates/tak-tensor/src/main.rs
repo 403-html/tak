@@ -1,7 +1,10 @@
 use std::{env, fs, path::PathBuf, process::ExitCode, time::Instant};
 
-use tak_codecs::{Method, encode};
-use tak_tensor::{QuantizedModel, decode_artifact, encode_artifact};
+use tak_codecs::{Method, decode, encode};
+use tak_tensor::{
+    QuantizedModel, decode_artifact, decode_order2_artifact, encode_artifact,
+    encode_order2_artifact,
+};
 
 fn main() -> ExitCode {
     match run() {
@@ -57,7 +60,26 @@ fn run() -> Result<(), String> {
     if restored != test {
         return Err("round-trip mismatch".to_owned());
     }
+    let start = Instant::now();
     let baseline = encode(test, Method::Order1);
+    let order1_encode_seconds = start.elapsed().as_secs_f64();
+    let start = Instant::now();
+    let order1_restored =
+        decode(&baseline, test.len() as u64).map_err(|error| error.to_string())?;
+    let order1_decode_seconds = start.elapsed().as_secs_f64();
+    if order1_restored != test {
+        return Err("order-1 control round-trip mismatch".to_owned());
+    }
+    let start = Instant::now();
+    let order2 = encode_order2_artifact(test);
+    let order2_encode_seconds = start.elapsed().as_secs_f64();
+    let start = Instant::now();
+    let order2_restored =
+        decode_order2_artifact(&order2, test.len() as u64).map_err(|error| error.to_string())?;
+    let order2_decode_seconds = start.elapsed().as_secs_f64();
+    if order2_restored != test {
+        return Err("order-2 control round-trip mismatch".to_owned());
+    }
     if let Some(path) = value(&args, "--output") {
         if PathBuf::from(path).exists() {
             return Err(format!("refusing to overwrite {path}"));
@@ -65,10 +87,10 @@ fn run() -> Result<(), String> {
         fs::write(path, &artifact).map_err(|error| error.to_string())?;
     }
     println!(
-        "rank\ttrain_bytes\ttest_bytes\titerations\tmodel_bytes\tartifact_bytes\torder1_bytes\tfull_precision_bpb\tquantized_core_bpb\tinteger_frequency_bpb\ttraining_seconds\tencode_seconds\tdecode_seconds\troundtrip"
+        "rank\ttrain_bytes\ttest_bytes\titerations\tmodel_bytes\tartifact_bytes\torder1_bytes\torder2_bytes\tfull_precision_bpb\tquantized_core_bpb\tinteger_frequency_bpb\ttraining_seconds\tencode_seconds\tdecode_seconds\torder1_encode_seconds\torder1_decode_seconds\torder2_encode_seconds\torder2_decode_seconds\troundtrip"
     );
     println!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{training_seconds:.6}\t{encode_seconds:.6}\t{decode_seconds:.6}\ttrue",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{training_seconds:.6}\t{encode_seconds:.6}\t{decode_seconds:.6}\t{order1_encode_seconds:.6}\t{order1_decode_seconds:.6}\t{order2_encode_seconds:.6}\t{order2_decode_seconds:.6}\ttrue",
         model.rank(),
         training.len(),
         test.len(),
@@ -76,6 +98,7 @@ fn run() -> Result<(), String> {
         model.model_bytes(),
         artifact.len(),
         baseline.len(),
+        order2.len(),
         diagnostics.full_precision_bits_per_byte,
         diagnostics.quantized_core_bits_per_byte,
         diagnostics.integer_frequency_bits_per_byte

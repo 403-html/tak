@@ -5,6 +5,9 @@
 const ALPHABET_SIZE: usize = 256;
 const MAX_TOTAL: u32 = 16_384;
 const START_CONTEXT: usize = 256;
+const ORDER2_SINGLE_BASE: usize = 65_536;
+const ORDER2_START_CONTEXT: usize = ORDER2_SINGLE_BASE + ALPHABET_SIZE;
+const ORDER2_CONTEXT_COUNT: usize = ORDER2_START_CONTEXT + 1;
 
 /// Supplies cumulative integer frequencies to an entropy coder.
 pub trait ByteModel {
@@ -148,9 +151,69 @@ impl ByteModel for Order1Model {
     }
 }
 
+/// An adaptive model selected by the two immediately preceding bytes.
+///
+/// The start state and second byte use dedicated shorter contexts. Two-byte
+/// distributions are allocated on first use. The maximum frequency storage is
+/// approximately 34 MiB when all contexts occur.
+pub struct Order2Model {
+    distributions: Vec<Option<Box<Distribution>>>,
+    context: usize,
+    previous: Option<u8>,
+}
+
+impl Default for Order2Model {
+    fn default() -> Self {
+        let mut distributions = Vec::with_capacity(ORDER2_CONTEXT_COUNT);
+        distributions.resize_with(ORDER2_CONTEXT_COUNT, || None);
+        Self {
+            distributions,
+            context: ORDER2_START_CONTEXT,
+            previous: None,
+        }
+    }
+}
+
+impl ByteModel for Order2Model {
+    fn range(&self, symbol: u8) -> (u32, u32, u32) {
+        self.distributions[self.context].as_ref().map_or(
+            (u32::from(symbol), u32::from(symbol) + 1, 256),
+            |distribution| distribution.range(symbol),
+        )
+    }
+
+    fn symbol(&self, value: u32) -> (u8, u32, u32, u32) {
+        self.distributions[self.context].as_ref().map_or_else(
+            || {
+                let symbol = u8::try_from(value).expect("uniform distribution total is 256");
+                (symbol, value, value + 1, 256)
+            },
+            |distribution| distribution.symbol(value),
+        )
+    }
+
+    fn update(&mut self, symbol: u8) {
+        self.distributions[self.context]
+            .get_or_insert_with(|| Box::new(Distribution::new()))
+            .update(symbol);
+        self.context = self
+            .previous
+            .map_or(ORDER2_SINGLE_BASE + usize::from(symbol), |previous| {
+                (usize::from(previous) << 8) | usize::from(symbol)
+            });
+        self.previous = Some(symbol);
+    }
+
+    fn total(&self) -> u32 {
+        self.distributions[self.context]
+            .as_ref()
+            .map_or(256, |distribution| distribution.total)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ByteModel, Order0Model, Order1Model};
+    use super::{ByteModel, Order0Model, Order1Model, Order2Model};
 
     fn exercise(mut model: impl ByteModel) {
         for symbol in (0_u8..=255).cycle().take(40_000) {
@@ -170,5 +233,10 @@ mod tests {
     #[test]
     fn order_1_ranges_remain_valid() {
         exercise(Order1Model::default());
+    }
+
+    #[test]
+    fn order_2_ranges_remain_valid() {
+        exercise(Order2Model::default());
     }
 }

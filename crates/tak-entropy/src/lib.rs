@@ -182,7 +182,7 @@ impl<'a> BitReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::{decode, encode};
-    use tak_context::{Order0Model, Order1Model};
+    use tak_context::{Order0Model, Order1Model, Order2Model};
 
     #[test]
     fn round_trips_both_models() {
@@ -202,6 +202,11 @@ mod tests {
             let encoded = encode(&input, Order1Model::default());
             assert_eq!(
                 decode(&encoded, input.len(), Order1Model::default()).unwrap(),
+                input
+            );
+            let encoded = encode(&input, Order2Model::default());
+            assert_eq!(
+                decode(&encoded, input.len(), Order2Model::default()).unwrap(),
                 input
             );
         }
