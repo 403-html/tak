@@ -1,6 +1,6 @@
 # RFC 0016: Price-based LZ parser gate
 
-- Status: Draft
+- Status: Calgary size validated; decode-time condition failed
 - Date: 2026-11-23
 - Scope: Classical encoder parser only
 - Format change: None
@@ -23,16 +23,17 @@ On the five Silesia development groups, the profile shows:
 | Literal lengths | 903,701 | 0.096 |
 | Block types | 572,106 | 0.061 |
 
-Three candidate mechanisms are small:
+Two other candidate mechanisms are small upper bounds:
 
 - Repeat-distance coding: matches that reuse one of the last four distances
   spend 509,264 distance bits in total. That is 0.054 bits per byte before any
-  repeat-symbol cost. A screening replay with a five-symbol repeat alphabet
-  saved only 254,877 bits, or 0.027 bits per byte.
+  repeat-symbol cost, so a repeat alphabet cannot save more.
 - Literal exclusion: removing the known mismatching byte from the first
   literal after each match saves 102,269 bits, or 0.011 bits per byte.
-- Finer distance-slot or alignment coding saved 15,666 to 220,001 bits in
-  the same screening replay. It does not help text.
+
+Distance remainder bits are the largest metadata cost, but they are stored
+uniformly because the bucket already captures most of their predictable
+magnitude. This RFC does not test distance remodeling.
 
 The largest measured parser miss is cost-blind match acceptance. The greedy
 parser takes every match of at least eight bytes. For 145,471 of 416,990
@@ -125,3 +126,65 @@ Unit tests MUST show that a priced parse covers the input in order, that each
 match copies bytes equal to its source, and that long runs cross both the
 segment and nice-length boundaries. Artifact tests MUST round-trip through the
 existing decoder.
+
+## 8. Results
+
+The Silesia development gate passes. The complete priced artifact is smaller
+on all five groups. Aggregate size falls from 2,845,106 to 2,702,364 bytes, a
+142,742-byte or 5.02% reduction. That is 0.1208 bits per input byte, above the
+0.05 threshold. Every artifact restores exactly through the unchanged decoder.
+Peak gate-process RSS, covering both encoders and decoders, is 145,056 KiB.
+
+| Group | RFC 0015 bytes | RFC 0016 bytes | Saved bits per byte |
+|---|---:|---:|---:|
+| Dickens | 339,732 | 316,625 | 0.1814 |
+| Samba | 404,081 | 371,039 | 0.1223 |
+| XML | 117,194 | 108,714 | 0.1269 |
+| Mozilla | 1,767,879 | 1,695,206 | 0.1135 |
+| OOffice | 216,220 | 210,780 | 0.0707 |
+
+The frozen parser then improves all 18 Calgary files. Aggregate size falls
+from 996,359 to 950,768 bytes, a 45,591-byte or 4.58% reduction. Every file
+restores exactly.
+
+Five controlled Calgary repetitions after one warm-up give a median aggregate
+decode time of 0.903 seconds versus 0.820 seconds for RFC 0015. The ratio is
+1.102. It misses the 1.10 bound in Section 4 by 0.002. Median aggregate encode
+time is 1.933 seconds versus 1.679, or 1.15 times. Peak process RSS is 55,812
+KiB.
+
+## 9. Decision
+
+The size hypothesis passes on development and validation data. The
+pre-registered decode-time condition fails narrowly. Do not promote RFC 0016
+to the best-ratio profile, and do not relax the bound on the same
+measurement.
+
+The decoder is unchanged. The extra decode time follows from the chosen
+blocks. On Calgary, the priced parse codes 1,895,245 bytes as literals instead
+of 936,030, and emits 79,345 matches instead of 165,917. Each literal costs an
+arithmetic-coded byte-model step, while match bytes only update the model.
+This block count comes from a separate instrumented run, not the timed run.
+
+A follow-up MUST either state a new decode-time budget before any new
+measurement, or reduce decoder literal cost. Do not tune the parser parameters
+on these results. An enwik9 result requires a bounded priced encoder. The
+current research encoder reads the complete input, so enwik9 is unmeasured.
+
+Raw profile rows are in
+`benchmarks/reports/raw/2026-11-23-lz-profile-silesia.tsv`, SHA-256
+`62c9821be0bd5d94520f34e6b3044d01d73e4eb1a5ab4ea7db332b7c4f228045`, and
+`benchmarks/reports/raw/2026-11-23-lz-profile-calgary.tsv`, SHA-256
+`d392298cf47c24357ba049cf4a9ec226903954ed1220a537a240f1d7a879eec1`.
+Development artifact rows are in
+`benchmarks/reports/raw/2026-11-23-lz-priced-silesia.tsv`, SHA-256
+`832f442044ecda5def2e7d8627da651355489ace61d56891f94048a7595e98ee`.
+Calgary artifact rows are in
+`benchmarks/reports/raw/2026-11-23-lz-priced-calgary.tsv`, SHA-256
+`bf9ae772150319a2156f0f72e7b74d798bf3d5f3e5a388366f936f9a2d1063f7`.
+Controlled Calgary rows are in
+`benchmarks/reports/raw/2026-11-23-lz-priced-controlled.tsv`, SHA-256
+`48ea8d9845689c424fac7f2e710f82cf898bfd1dd48b7ce147ab787f88b23d49`.
+Calgary block counts are in
+`benchmarks/reports/raw/2026-11-23-lz-priced-blocks-calgary.tsv`, SHA-256
+`16281a7c20872ba0ee0762cc3f4ef12611c3cb23c07ed051752a5acb33fa7c21`.

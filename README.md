@@ -225,6 +225,16 @@ beats M1 by 45,660,952 bytes but remains 41,010,109 bytes above Zstandard-19,
 60,664,852 bytes above xz, and 79,339,048 bytes above M2. Do not test more
 candidate counts; the next ratio experiment must identify another mechanism.
 
+RFC 0016 profiled RFC 0015 token costs. About 35% of its matches cost more
+than the byte model needs for the bytes they cover. A price-based parser that
+weighs exact literal cost against match cost, with an unchanged `TKLZ`
+decoder, shrank all five Silesia development groups by 5.02% in aggregate. It
+then shrank all 18 Calgary files to 950,768 bytes, 4.58% below RFC 0015. That
+is 29,695 bytes above Zstandard-19 and 64,908 bytes above xz. The controlled
+decode-time ratio was 1.102, just over the pre-registered 1.10 bound, so it is
+not promoted. Its enwik9 result is unmeasured because the research encoder is
+not yet bounded.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console

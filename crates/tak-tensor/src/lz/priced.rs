@@ -130,7 +130,9 @@ impl Emitter {
     fn matched(&mut self, length: usize, distance: usize) {
         self.flush_literal();
         self.state.types.update(1);
-        self.state.match_lengths.update(bucket_of(length - MIN_MATCH));
+        self.state
+            .match_lengths
+            .update(bucket_of(length - MIN_MATCH));
         self.state.distances.update(bucket_of(distance - 1));
         self.blocks.push(Block::Match { length, distance });
     }
@@ -237,7 +239,9 @@ fn model_bits(model: &Match8Model, byte: u8) -> f64 {
 #[derive(Clone, Copy)]
 enum Step {
     Unreached,
-    Literal { from_literal: bool },
+    Literal {
+        from_literal: bool,
+    },
     Match {
         from: u32,
         from_literal: bool,
@@ -293,7 +297,8 @@ fn solve_segment(
             }
             let distance = candidate.distance as usize;
             let short_end = available.min(MIN_MATCH + SHORT_LENGTHS - 1);
-            let lengths = (MIN_MATCH..=short_end).chain((available > short_end).then_some(available));
+            let lengths =
+                (MIN_MATCH..=short_end).chain((available > short_end).then_some(available));
             for length in lengths {
                 let cost = base + prices.match_cost(length, distance);
                 let end = index + length;
@@ -393,7 +398,11 @@ mod tests {
                 }
             }
         }
-        assert!(blocks.iter().any(|block| matches!(block, Block::Match { .. })));
+        assert!(
+            blocks
+                .iter()
+                .any(|block| matches!(block, Block::Match { .. }))
+        );
     }
 
     #[test]

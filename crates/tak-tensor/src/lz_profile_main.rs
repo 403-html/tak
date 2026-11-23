@@ -328,7 +328,10 @@ impl Profile {
                 "distance_bucket_bits",
                 format!("{:.3}", self.distance_bucket_bits),
             ),
-            ("distance_raw_bits", format!("{:.3}", self.distance_raw_bits)),
+            (
+                "distance_raw_bits",
+                format!("{:.3}", self.distance_raw_bits),
+            ),
             ("literal_bits", format!("{:.3}", self.literal_bits)),
             ("repeat0_matches", self.repeat0_matches.to_string()),
             (
@@ -348,7 +351,10 @@ impl Profile {
             ("exclusion_predicted", self.exclusion_predicted.to_string()),
             ("lazy_longer", self.lazy_longer.to_string()),
             ("lazy_extra_bytes", self.lazy_extra_bytes.to_string()),
-            ("unprofitable_matches", self.unprofitable_matches.to_string()),
+            (
+                "unprofitable_matches",
+                self.unprofitable_matches.to_string(),
+            ),
             (
                 "unprofitable_match_bytes",
                 self.unprofitable_match_bytes.to_string(),
@@ -444,8 +450,7 @@ fn account(input: &[u8], parsed: &Parsed) -> Profile {
                 }
                 position += length;
                 let end = position;
-                excluded = (length < MAX_MATCH && end < input.len())
-                    .then(|| input[end - distance]);
+                excluded = (length < MAX_MATCH && end < input.len()).then(|| input[end - distance]);
             }
         }
     }

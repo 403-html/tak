@@ -1513,10 +1513,35 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        LzError, decode_lz_artifact, decode_lz_stream, encode_lz_artifact, encode_lz_stream,
-        encode_lz_two_candidate_artifact, encode_lz_two_candidate_stream,
+        LzError, decode_lz_artifact, decode_lz_stream, encode_lz_artifact,
+        encode_lz_priced_artifact, encode_lz_stream, encode_lz_two_candidate_artifact,
+        encode_lz_two_candidate_stream,
     };
     use crate::HEADER_LEN;
+
+    #[test]
+    fn priced_artifact_round_trips_through_existing_decoders() {
+        let mut input = Vec::new();
+        for round in 0..3_000_u32 {
+            input.extend_from_slice(b"price-based parsing keeps TKLZ ");
+            input.extend_from_slice(&(round % 97).to_le_bytes());
+        }
+        input.extend(std::iter::repeat_n(7_u8, 5_000));
+        let artifact = encode_lz_priced_artifact(&input);
+        let limit = input.len() as u64;
+        assert_eq!(decode_lz_artifact(&artifact, limit).unwrap(), input);
+        let mut restored = Vec::new();
+        decode_lz_stream(Cursor::new(&artifact), &mut restored, limit).unwrap();
+        assert_eq!(restored, input);
+    }
+
+    #[test]
+    fn priced_artifact_handles_empty_and_tiny_inputs() {
+        for input in [&b""[..], b"a", b"abcdefg", b"abcdefgh"] {
+            let artifact = encode_lz_priced_artifact(input);
+            assert_eq!(decode_lz_artifact(&artifact, 8).unwrap(), input);
+        }
+    }
 
     #[test]
     fn artifacts_round_trip_short_and_repeated_inputs() {
