@@ -225,6 +225,20 @@ beats M1 by 45,660,952 bytes but remains 41,010,109 bytes above Zstandard-19,
 60,664,852 bytes above xz, and 79,339,048 bytes above M2. Do not test more
 candidate counts; the next ratio experiment must identify another mechanism.
 
+RFC 0016 measured the RFC 0015 token costs. Approximately 35% of its matches
+cost more than the byte model needs for the same bytes. A price-based parser
+compares the exact literal cost with the match cost. The `TKLZ` decoder does
+not change. The parser made all five Silesia development groups smaller, by
+5.02% in aggregate. Then it made all 18 Calgary files smaller. The Calgary
+total is 950,768 bytes, 4.58% less than RFC 0015. That is 29,695 bytes more
+than Zstandard-19 and 64,908 bytes more than xz.
+
+The first controlled decode-time ratio was 1.102. The limit was 1.10. A
+decoder-only change then decreased the ratio to 1.053. It did not change any
+artifact byte. Thus RFC 0016 is now the smallest validated TAK Calgary result.
+A bounded encoder makes the same artifacts. There is no enwik9 result yet, so
+the table above still shows RFC 0015.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console

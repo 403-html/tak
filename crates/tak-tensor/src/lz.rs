@@ -1,9 +1,11 @@
 use std::collections::VecDeque;
-use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 
 use tak_context::{ByteModel, Match8Model};
 
 use crate::{HEADER_LEN, crc32, read_u64};
+
+mod priced;
 
 const MAGIC: &[u8; 4] = b"TKLZ";
 const TABLE_BITS: u32 = 20;
@@ -122,8 +124,34 @@ pub fn encode_lz_two_candidate_artifact(input: &[u8]) -> Vec<u8> {
     encode_lz_artifact_with_candidates(input, 2)
 }
 
+/// Encodes a complete RFC 0016 price-based parser research artifact.
+///
+/// The artifact uses the unchanged RFC 0014 `TKLZ` syntax and decoder.
+#[must_use]
+pub fn encode_lz_priced_artifact(input: &[u8]) -> Vec<u8> {
+    encode_blocks(input, priced::parse_priced(input))
+}
+
+/// Encodes an RFC 0016 price-based parser artifact with bounded memory.
+///
+/// The artifact is byte-identical to [`encode_lz_priced_artifact`].
+///
+/// # Errors
+///
+/// Returns an error for I/O failure, a nonempty output, or an input larger than
+/// the experimental format's `u32` encoder-position limit.
+pub fn encode_lz_priced_stream(
+    mut input: impl Read + Seek,
+    mut output: impl Write + Seek,
+) -> Result<LzEncodeStats, LzStreamError> {
+    priced::encode_priced_stream(&mut input, &mut output)
+}
+
 fn encode_lz_artifact_with_candidates(input: &[u8], candidates: usize) -> Vec<u8> {
-    let blocks = parse(input, candidates);
+    encode_blocks(input, parse(input, candidates))
+}
+
+fn encode_blocks(input: &[u8], blocks: Vec<Block>) -> Vec<u8> {
     let mut encoder = RangeEncoder::new();
     let mut model = Match8Model::new();
     let mut types = AdaptiveDistribution::new(3);
@@ -728,7 +756,7 @@ struct Entry {
     occupied: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Block {
     Literal { start: usize, length: usize },
     Match { length: usize, distance: usize },
@@ -1336,22 +1364,26 @@ impl<R: Read> StreamRangeDecoder<R> {
         let width = self.high - self.low + 1;
         self.high = self.low + width * u64::from(cumulative_high) / u64::from(total) - 1;
         self.low += width * u64::from(cumulative_low) / u64::from(total);
-        loop {
-            if self.high < HALF {
-            } else if self.low >= HALF {
-                self.low -= HALF;
-                self.high -= HALF;
-                self.code -= HALF;
-            } else if self.low >= QUARTER && self.high < THREE_QUARTERS {
-                self.low -= QUARTER;
-                self.high -= QUARTER;
-                self.code -= QUARTER;
-            } else {
-                break;
-            }
-            self.low <<= 1;
-            self.high = (self.high << 1) | 1;
-            self.code = ((self.code << 1) & RANGE_MAX) | u64::from(self.reader.bit()?);
+        self.renormalize()?;
+        Ok(())
+    }
+
+    #[inline]
+    fn renormalize(&mut self) -> Result<(), LzStreamError> {
+        let matching = (self.low ^ self.high).leading_zeros() - 32;
+        if matching != 0 {
+            let fill = (1_u64 << matching) - 1;
+            self.low = (self.low << matching) & RANGE_MAX;
+            self.high = ((self.high << matching) | fill) & RANGE_MAX;
+            self.code = ((self.code << matching) & RANGE_MAX) | self.reader.bits(matching)?;
+        }
+        let straddle = ((self.low & !self.high) << 1) & RANGE_MAX;
+        let quarter = (straddle << 32).leading_ones();
+        if quarter != 0 {
+            let fill = (1_u64 << quarter) - 1;
+            self.low = ((self.low << quarter) & RANGE_MAX) ^ HALF;
+            self.high = (((self.high << quarter) | fill) & RANGE_MAX) ^ HALF;
+            self.code = (((self.code << quarter) & RANGE_MAX) | self.reader.bits(quarter)?) ^ HALF;
         }
         Ok(())
     }
@@ -1364,40 +1396,84 @@ impl<R: Read> StreamRangeDecoder<R> {
 }
 
 struct StreamBitReader<R> {
-    input: BufReader<R>,
-    current: u8,
-    remaining: u8,
+    input: R,
+    buffer: Box<[u8]>,
+    position: usize,
+    filled: usize,
+    current: u64,
+    remaining: u32,
 }
 
 impl<R: Read> StreamBitReader<R> {
     fn new(input: R) -> Self {
         Self {
-            input: BufReader::with_capacity(64 * 1024, input),
+            input,
+            buffer: vec![0; 64 * 1024].into_boxed_slice(),
+            position: 0,
+            filled: 0,
             current: 0,
             remaining: 0,
         }
     }
 
-    fn bit(&mut self) -> io::Result<u8> {
-        if self.remaining == 0 {
-            let mut byte = [0_u8; 1];
-            loop {
-                match self.input.read(&mut byte) {
-                    Ok(0) => {
-                        self.current = 0;
-                        break;
-                    }
-                    Ok(_) => {
-                        self.current = byte[0];
-                        break;
-                    }
+    fn refill(&mut self) -> io::Result<()> {
+        if self.filled - self.position >= 8 {
+            let bytes: [u8; 8] = self.buffer[self.position..self.position + 8]
+                .try_into()
+                .expect("slice has eight bytes");
+            self.position += 8;
+            self.current = u64::from_be_bytes(bytes);
+            self.remaining = 64;
+            return Ok(());
+        }
+        let byte = self.next_byte()?;
+        self.current = u64::from(byte) << 56;
+        self.remaining = 8;
+        Ok(())
+    }
+
+    fn next_byte(&mut self) -> io::Result<u8> {
+        if self.position == self.filled {
+            self.position = 0;
+            self.filled = loop {
+                match self.input.read(&mut self.buffer) {
+                    Ok(count) => break count,
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(error) => return Err(error),
                 }
+            };
+            if self.filled == 0 {
+                return Ok(0);
             }
-            self.remaining = 8;
         }
-        let bit = (self.current >> (self.remaining - 1)) & 1;
+        let byte = self.buffer[self.position];
+        self.position += 1;
+        Ok(byte)
+    }
+
+    #[inline]
+    fn bits(&mut self, count: u32) -> io::Result<u64> {
+        debug_assert!(count <= 32);
+        if count <= self.remaining {
+            let value = self.current.checked_shr(64 - count).unwrap_or(0);
+            self.current = self.current.checked_shl(count).unwrap_or(0);
+            self.remaining -= count;
+            return Ok(value);
+        }
+        let mut value = 0;
+        for _ in 0..count {
+            value = (value << 1) | u64::from(self.bit()?);
+        }
+        Ok(value)
+    }
+
+    #[inline]
+    fn bit(&mut self) -> io::Result<u8> {
+        if self.remaining == 0 {
+            self.refill()?;
+        }
+        let bit = u8::try_from(self.current >> 63).expect("one bit fits u8");
+        self.current <<= 1;
         self.remaining -= 1;
         Ok(bit)
     }
@@ -1500,10 +1576,103 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        LzError, decode_lz_artifact, decode_lz_stream, encode_lz_artifact, encode_lz_stream,
-        encode_lz_two_candidate_artifact, encode_lz_two_candidate_stream,
+        LzError, decode_lz_artifact, decode_lz_stream, encode_lz_artifact,
+        encode_lz_priced_artifact, encode_lz_stream, encode_lz_two_candidate_artifact,
+        encode_lz_two_candidate_stream,
     };
     use crate::HEADER_LEN;
+
+    #[test]
+    fn bulk_renormalization_matches_single_bit_steps() {
+        use super::{
+            HALF, QUARTER, RANGE_MAX, StreamBitReader, StreamRangeDecoder, THREE_QUARTERS,
+        };
+
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let payload: Vec<u8> = (0..4_096).map(|_| next().to_le_bytes()[0]).collect();
+        for case in 0..20_000 {
+            let mut a = next() & RANGE_MAX;
+            let mut b = next() & RANGE_MAX;
+            if case % 3 == 0 {
+                let shift = next() % 32;
+                b = (a & !((1 << shift) - 1)) | (b & ((1 << shift) - 1));
+                if case % 2 == 0 {
+                    a = (a & !THREE_QUARTERS) | QUARTER;
+                    b = (b & !THREE_QUARTERS) | HALF;
+                }
+            }
+            let (low, high) = if a <= b { (a, b) } else { (b, a) };
+            let code = low + next() % (high - low + 1);
+            let offset = usize::try_from(next() % 4_000).unwrap();
+            let mut bulk = StreamRangeDecoder {
+                reader: StreamBitReader::new(Cursor::new(&payload[offset..])),
+                low,
+                high,
+                code,
+            };
+            bulk.renormalize().unwrap();
+
+            let mut reader = StreamBitReader::new(Cursor::new(&payload[offset..]));
+            let (mut low, mut high, mut code) = (low, high, code);
+            loop {
+                if high < HALF {
+                } else if low >= HALF {
+                    low -= HALF;
+                    high -= HALF;
+                    code -= HALF;
+                } else if low >= QUARTER && high < THREE_QUARTERS {
+                    low -= QUARTER;
+                    high -= QUARTER;
+                    code -= QUARTER;
+                } else {
+                    break;
+                }
+                low <<= 1;
+                high = (high << 1) | 1;
+                code = ((code << 1) & RANGE_MAX) | u64::from(reader.bit().unwrap());
+            }
+            assert_eq!(
+                (bulk.low, bulk.high, bulk.code),
+                (low, high, code),
+                "case {case}"
+            );
+            assert_eq!(
+                bulk.reader.bit().unwrap(),
+                reader.bit().unwrap(),
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn priced_artifact_round_trips_through_existing_decoders() {
+        let mut input = Vec::new();
+        for round in 0..3_000_u32 {
+            input.extend_from_slice(b"price-based parsing keeps TKLZ ");
+            input.extend_from_slice(&(round % 97).to_le_bytes());
+        }
+        input.extend(std::iter::repeat_n(7_u8, 5_000));
+        let artifact = encode_lz_priced_artifact(&input);
+        let limit = input.len() as u64;
+        assert_eq!(decode_lz_artifact(&artifact, limit).unwrap(), input);
+        let mut restored = Vec::new();
+        decode_lz_stream(Cursor::new(&artifact), &mut restored, limit).unwrap();
+        assert_eq!(restored, input);
+    }
+
+    #[test]
+    fn priced_artifact_handles_empty_and_tiny_inputs() {
+        for input in [&b""[..], b"a", b"abcdefg", b"abcdefgh"] {
+            let artifact = encode_lz_priced_artifact(input);
+            assert_eq!(decode_lz_artifact(&artifact, 8).unwrap(), input);
+        }
+    }
 
     #[test]
     fn artifacts_round_trip_short_and_repeated_inputs() {
