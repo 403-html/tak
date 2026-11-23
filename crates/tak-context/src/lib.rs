@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{BuildHasherDefault, Hasher};
-use std::num::NonZeroU16;
+use std::num::{NonZeroU16, NonZeroU32};
 
 const ALPHABET_SIZE: usize = 256;
 const MAX_TOTAL: u32 = 16_384;
@@ -217,6 +217,7 @@ pub struct Match8Model {
     table: Vec<MatchEntry>,
     history: u64,
     seen: u8,
+    bonus_divisor: NonZeroU32,
 }
 
 const MATCH_TABLE_BITS: u32 = 20;
@@ -234,11 +235,18 @@ impl Match8Model {
     /// Creates the fixed RFC 0009 model.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_bonus_divisor(NonZeroU32::new(4).unwrap_or(NonZeroU32::MIN))
+    }
+
+    /// Creates a research model with a specified match-bonus divisor.
+    #[must_use]
+    pub fn with_bonus_divisor(bonus_divisor: NonZeroU32) -> Self {
         Self {
             baseline: Order2NormalizedModel::new(NonZeroU16::new(4).unwrap_or(NonZeroU16::MIN)),
             table: vec![MatchEntry::default(); MATCH_TABLE_LEN],
             history: 0,
             seen: 0,
+            bonus_divisor,
         }
     }
 
@@ -268,7 +276,7 @@ impl ByteModel for Match8Model {
         let Some(prediction) = self.prediction() else {
             return (low, high, total);
         };
-        let bonus = total / 4;
+        let bonus = total / self.bonus_divisor.get();
         match symbol.cmp(&prediction) {
             std::cmp::Ordering::Greater => {
                 low += bonus;
@@ -285,7 +293,7 @@ impl ByteModel for Match8Model {
             return self.baseline.symbol(value);
         };
         let (prediction_low, prediction_high, total) = self.baseline.range(prediction);
-        let bonus = total / 4;
+        let bonus = total / self.bonus_divisor.get();
         let augmented_prediction_high = prediction_high + bonus;
         if value >= prediction_low && value < augmented_prediction_high {
             return (
@@ -323,7 +331,10 @@ impl ByteModel for Match8Model {
 
     fn total(&self) -> u32 {
         let total = self.baseline.total();
-        total + self.prediction().map_or(0, |_| total / 4)
+        total
+            + self
+                .prediction()
+                .map_or(0, |_| total / self.bonus_divisor.get())
     }
 }
 

@@ -43,6 +43,14 @@ path = "src/match_dependency_main.rs"
 name = "tak-match8-gate"
 path = "src/match8_main.rs"
 
+[[bin]]
+name = "tak-match8-stream"
+path = "src/match8_stream_main.rs"
+
+[[bin]]
+name = "tak-match8-strong-gate"
+path = "src/match8_strong_main.rs"
+
 [dependencies]
 tak-codecs = { path = "../tak-codecs" }
 tak-context = { path = "../tak-context" }

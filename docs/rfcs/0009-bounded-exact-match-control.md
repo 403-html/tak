@@ -1,6 +1,6 @@
 # RFC 0009: Bounded exact-match classical control
 
-- Status: Independent validation accepted; research artifact only
+- Status: Independent validation accepted; enwik9 M1 achieved
 - Date: 2026-11-23
 - Scope: Classical research artifact only
 - TAK-C method identifier: None
@@ -153,3 +153,21 @@ research-only. Its speed is far below project targets, and enwik9 behavior is
 unmeasured. A future tensor RFC must still specify a concrete representation
 of match state and a reason it can beat this direct table. Rank alone is not a
 mechanism.
+
+## 12. enwik9 validation
+
+The byte-identical streaming implementation produced a 315,578,766-byte
+complete artifact. This is 53,064,236 bytes or 14.39% smaller than RFC 0006.
+It is 6,421,234 bytes below the nominal M1 target.
+
+Encoding took 145.729 seconds at 6.54 MiB/s and peaked at 29,596 KiB RSS.
+Decoding took 232.001 seconds at 4.11 MiB/s and peaked at 29,488 KiB RSS. The
+restored billion-byte output matched the canonical enwik9 SHA-256 exactly.
+
+Accept M1 as a measured single-sample result. The artifact remains 118,578,766
+bytes above M2 and must remove 37.57% of its current bytes to reach it. It is
+80,249,827 bytes larger than measured Zstandard level 19 and 99,904,570 bytes
+larger than measured xz. Decode speed remains a major blocker.
+
+This result does not authorize a tensor implementation. Any tensor RFC must
+represent the measured long-range match state and compare against `TKM8`.

@@ -136,7 +136,20 @@ The unchanged RFC 0009 model subsequently passed Calgary validation. It was
 7.04% smaller than RFC 0006 in aggregate and 2.8% smaller than gzip under
 matching independent-file accounting. Median group decode ratios remained
 below 1.86x, peak process RSS was 21,720 KiB, and every decode was exact. A
-bounded streaming `TKM8` path is required before enwik9 measurement.
+bounded streaming `TKM8` path was required before enwik9 measurement.
+
+The byte-identical streaming path then produced a 315,578,766-byte enwik9
+artifact and restored all 1,000,000,000 bytes exactly. This achieves nominal
+M1 by 6,421,234 bytes and beats measured gzip by 7,013,222 bytes. It remains
+80,249,827 bytes larger than Zstandard level 19 and 99,904,570 bytes larger
+than xz. Encoding reached 6.54 MiB/s and decoding 4.11 MiB/s with about 29 MiB
+peak RSS, so both compression ratio and speed remain major research targets.
+
+RFC 0010 tested one stronger exact-match bonus against the Calgary xz and
+Zstandard targets. It reduced RFC 0009 by another 2.80% but stopped at
+1,000,695 bytes, still 79,622 bytes above Zstandard-19 and 114,835 above xz.
+The experiment is rejected; more bonus tuning is prohibited. A future ratio
+experiment must test a new mechanism such as explicit match-run tokens.
 
 Reproduce the RFC 0002 tensor artifact with:
 
