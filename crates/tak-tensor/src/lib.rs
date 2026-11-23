@@ -2,12 +2,14 @@
 //!
 //! Artifacts use `TKRX`, not TAK-C. This crate makes no compression claim.
 
+mod match8;
 mod order2_normalized;
 mod order2_smoothing;
 mod second_order;
 mod third_order;
 mod third_order_backoff;
 
+pub use match8::{decode_match8_artifact, encode_match8_artifact};
 pub use order2_normalized::{
     StreamArtifactError, StreamArtifactStats, decode_order2_normalized_artifact,
     decode_order2_normalized_stream, encode_order2_normalized_artifact,

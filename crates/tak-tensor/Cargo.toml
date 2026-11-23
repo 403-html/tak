@@ -39,6 +39,10 @@ path = "src/order2_normalized_stream_main.rs"
 name = "tak-match-dependency"
 path = "src/match_dependency_main.rs"
 
+[[bin]]
+name = "tak-match8-gate"
+path = "src/match8_main.rs"
+
 [dependencies]
 tak-codecs = { path = "../tak-codecs" }
 tak-context = { path = "../tak-context" }

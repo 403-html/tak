@@ -211,6 +211,122 @@ pub struct Order2NormalizedModel {
     prior_strength: NonZeroU16,
 }
 
+/// A bounded exact-suffix match predictor over normalized order-2.
+pub struct Match8Model {
+    baseline: Order2NormalizedModel,
+    table: Vec<MatchEntry>,
+    history: u64,
+    seen: u8,
+}
+
+const MATCH_TABLE_BITS: u32 = 20;
+const MATCH_TABLE_LEN: usize = 1 << MATCH_TABLE_BITS;
+const MATCH_HASH_MULTIPLIER: u64 = 0x9e37_79b9_7f4a_7c15;
+
+#[derive(Clone, Copy, Default)]
+struct MatchEntry {
+    key: u64,
+    continuation: u8,
+    occupied: bool,
+}
+
+impl Match8Model {
+    /// Creates the fixed RFC 0009 model.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            baseline: Order2NormalizedModel::new(NonZeroU16::new(4).unwrap_or(NonZeroU16::MIN)),
+            table: vec![MatchEntry::default(); MATCH_TABLE_LEN],
+            history: 0,
+            seen: 0,
+        }
+    }
+
+    fn index(key: u64) -> usize {
+        let index = key.wrapping_mul(MATCH_HASH_MULTIPLIER) >> (64 - MATCH_TABLE_BITS);
+        usize::try_from(index).expect("20-bit index fits usize")
+    }
+
+    fn prediction(&self) -> Option<u8> {
+        if self.seen < 8 {
+            return None;
+        }
+        let entry = self.table[Self::index(self.history)];
+        (entry.occupied && entry.key == self.history).then_some(entry.continuation)
+    }
+}
+
+impl Default for Match8Model {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ByteModel for Match8Model {
+    fn range(&self, symbol: u8) -> (u32, u32, u32) {
+        let (mut low, mut high, total) = self.baseline.range(symbol);
+        let Some(prediction) = self.prediction() else {
+            return (low, high, total);
+        };
+        let bonus = total / 4;
+        match symbol.cmp(&prediction) {
+            std::cmp::Ordering::Greater => {
+                low += bonus;
+                high += bonus;
+            }
+            std::cmp::Ordering::Equal => high += bonus,
+            std::cmp::Ordering::Less => {}
+        }
+        (low, high, total + bonus)
+    }
+
+    fn symbol(&self, value: u32) -> (u8, u32, u32, u32) {
+        let Some(prediction) = self.prediction() else {
+            return self.baseline.symbol(value);
+        };
+        let (prediction_low, prediction_high, total) = self.baseline.range(prediction);
+        let bonus = total / 4;
+        let augmented_prediction_high = prediction_high + bonus;
+        if value >= prediction_low && value < augmented_prediction_high {
+            return (
+                prediction,
+                prediction_low,
+                augmented_prediction_high,
+                total + bonus,
+            );
+        }
+        let baseline_value = if value >= augmented_prediction_high {
+            value - bonus
+        } else {
+            value
+        };
+        let (symbol, mut low, mut high, _) = self.baseline.symbol(baseline_value);
+        if symbol > prediction {
+            low += bonus;
+            high += bonus;
+        }
+        (symbol, low, high, total + bonus)
+    }
+
+    fn update(&mut self, symbol: u8) {
+        self.baseline.update(symbol);
+        if self.seen >= 8 {
+            self.table[Self::index(self.history)] = MatchEntry {
+                key: self.history,
+                continuation: symbol,
+                occupied: true,
+            };
+        }
+        self.history = (self.history << 8) | u64::from(symbol);
+        self.seen = self.seen.saturating_add(1).min(8);
+    }
+
+    fn total(&self) -> u32 {
+        let total = self.baseline.total();
+        total + self.prediction().map_or(0, |_| total / 4)
+    }
+}
+
 #[derive(Clone)]
 struct LocalIncrements {
     frequencies: [u16; ALPHABET_SIZE],
@@ -743,8 +859,8 @@ mod tests {
     use std::num::NonZeroU16;
 
     use super::{
-        ByteModel, Distribution, LocalIncrements, Order0Model, Order1Model, Order2Model,
-        Order2NormalizedModel, Order2SmoothedModel, Order3BackoffModel, Order3Model,
+        ByteModel, Distribution, LocalIncrements, Match8Model, Order0Model, Order1Model,
+        Order2Model, Order2NormalizedModel, Order2SmoothedModel, Order3BackoffModel, Order3Model,
         SparseDistribution,
     };
 
@@ -787,6 +903,30 @@ mod tests {
                 NonZeroU16::new(strength).unwrap(),
             ));
         }
+    }
+
+    #[test]
+    fn bounded_match_ranges_remain_valid() {
+        exercise(Match8Model::new());
+    }
+
+    #[test]
+    fn bounded_match_collision_replaces_the_slot() {
+        let first_key = 0_u64;
+        let index = Match8Model::index(first_key);
+        // This is the multiplicative inverse of MATCH_HASH_MULTIPLIER modulo
+        // 2^64. Its hash product is one, so its high 20 bits equal key zero.
+        let second_key = 0xf1de_83e1_9937_733d;
+        assert_eq!(Match8Model::index(second_key), index);
+        let mut model = Match8Model::new();
+        model.seen = 8;
+        model.history = first_key;
+        model.update(b'a');
+        assert_eq!(model.table[index].key, first_key);
+        model.history = second_key;
+        model.update(b'b');
+        assert_eq!(model.table[index].key, second_key);
+        assert_eq!(model.table[index].continuation, b'b');
     }
 
     #[test]

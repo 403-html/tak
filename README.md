@@ -125,6 +125,13 @@ after conditioning on RFC 0006. This is a diagnostic result, not compressed
 size. A bounded classical match artifact must measure its actual benefit before
 any tensor implementation or milestone claim.
 
+RFC 0009 implements the required bounded classical control. Its fixed
+1,048,576-slot exact-match table reduced complete size by 6.39% to 20.54% on
+all five Silesia development groups and by 11.26% in aggregate. Peak complete
+process memory was 115,040 KiB, and every artifact round-tripped exactly. This
+is development evidence; controlled timing and independent validation remain
+required before an enwik9 run or tensor proposal.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console
@@ -169,6 +176,13 @@ Run the RFC 0008 dependency diagnostic with:
 
 ```console
 cargo run --release -p tak-tensor --bin tak-match-dependency -- \
+  input.bin --tail-bytes 1000000
+```
+
+Run the RFC 0009 bounded classical gate with:
+
+```console
+cargo run --release -p tak-tensor --bin tak-match8-gate -- \
   input.bin --tail-bytes 1000000
 ```
 
