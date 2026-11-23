@@ -20,19 +20,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
-    let args: Vec<String> = env::args().skip(1).collect();
-    let (path, tail_bytes) = match args.as_slice() {
-        [path] => (PathBuf::from(path), None),
-        [path, option, value] if option == "--tail-bytes" => (
-            PathBuf::from(path),
-            Some(
-                value
-                    .parse::<usize>()
-                    .map_err(|_| "tail-bytes must be a nonnegative integer")?,
-            ),
-        ),
-        _ => return Err("expected INPUT [--tail-bytes N]".to_owned()),
-    };
+    let (path, tail_bytes, candidates) = parse_args(env::args().skip(1))?;
     let input = fs::read(path).map_err(|error| error.to_string())?;
     let input = if let Some(bytes) = tail_bytes {
         let start = input
@@ -45,14 +33,15 @@ fn run() -> Result<(), String> {
     };
     u32::try_from(input.len()).map_err(|_| "input must not exceed 4294967295 bytes")?;
 
-    let blocks = parse(input);
+    let blocks = parse(input, candidates);
     let result = account(input, &blocks);
     println!(
-        "input_bytes\tliteral_blocks\tmatch_blocks\tliteral_bytes\tmatch_bytes\tmatch_coverage\tbaseline_bits\ttype_bits\tlength_bits\tdistance_bits\tliteral_bits\tcandidate_bits\tsaved_bits\tsaved_bits_per_byte"
+        "input_bytes\tcandidates\tliteral_blocks\tmatch_blocks\tliteral_bytes\tmatch_bytes\tmatch_coverage\tbaseline_bits\ttype_bits\tlength_bits\tdistance_bits\tliteral_bits\tcandidate_bits\tsaved_bits\tsaved_bits_per_byte"
     );
     println!(
-        "{}\t{}\t{}\t{}\t{}\t{:.9}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.9}",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{:.9}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.9}",
         input.len(),
+        candidates,
         result.literal_blocks,
         result.match_blocks,
         result.literal_bytes,
@@ -70,10 +59,47 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+fn parse_args(
+    args: impl Iterator<Item = String>,
+) -> Result<(PathBuf, Option<usize>, usize), String> {
+    let mut path = None;
+    let mut tail_bytes = None;
+    let mut candidates = 1;
+    let mut args = args.peekable();
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--tail-bytes" => {
+                let value = args.next().ok_or("tail-bytes requires a value")?;
+                tail_bytes = Some(
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| "tail-bytes must be a nonnegative integer")?,
+                );
+            }
+            "--candidates" => {
+                let value = args.next().ok_or("candidates requires a value")?;
+                candidates = value
+                    .parse::<usize>()
+                    .map_err(|_| "candidates must be 1 or 2")?;
+                if !matches!(candidates, 1 | 2) {
+                    return Err("candidates must be 1 or 2".to_owned());
+                }
+            }
+            _ if argument.starts_with('-') => return Err(format!("unknown option: {argument}")),
+            _ if path.is_none() => path = Some(PathBuf::from(argument)),
+            _ => return Err("expected one input path".to_owned()),
+        }
+    }
+    let path = path.ok_or("expected INPUT [--tail-bytes N] [--candidates 1|2]")?;
+    Ok((path, tail_bytes, candidates))
+}
+
 #[derive(Clone, Copy, Default)]
 struct Entry {
     key: u64,
     position: u32,
+    previous_position: u32,
+    has_previous: bool,
     occupied: bool,
 }
 
@@ -83,14 +109,14 @@ enum Block {
     Match { length: usize, distance: usize },
 }
 
-fn parse(input: &[u8]) -> Vec<Block> {
+fn parse(input: &[u8], candidates: usize) -> Vec<Block> {
     let mut table = vec![Entry::default(); TABLE_LEN];
     let mut blocks = Vec::new();
     let mut literal_start = 0;
     let mut literal_length = 0;
     let mut position = 0;
     while position < input.len() {
-        let found = find_match(input, position, &table);
+        let found = find_match(input, position, &table, candidates);
         if let Some((length, distance)) = found {
             if literal_length != 0 {
                 blocks.push(Block::Literal {
@@ -123,13 +149,30 @@ fn parse(input: &[u8]) -> Vec<Block> {
     blocks
 }
 
-fn find_match(input: &[u8], position: usize, table: &[Entry]) -> Option<(usize, usize)> {
+fn find_match(
+    input: &[u8],
+    position: usize,
+    table: &[Entry],
+    candidates: usize,
+) -> Option<(usize, usize)> {
     let key = key_at(input, position)?;
     let entry = table[table_index(key)];
     if !entry.occupied || entry.key != key {
         return None;
     }
-    let candidate = usize::try_from(entry.position).expect("input position fits usize");
+    let mut best = match_at(input, position, entry.position);
+    if candidates == 2 && entry.has_previous {
+        if let Some(older) = match_at(input, position, entry.previous_position) {
+            if best.is_none_or(|latest| older.0 > latest.0) {
+                best = Some(older);
+            }
+        }
+    }
+    best
+}
+
+fn match_at(input: &[u8], position: usize, candidate: u32) -> Option<(usize, usize)> {
+    let candidate = usize::try_from(candidate).expect("input position fits usize");
     let distance = position.checked_sub(candidate)?;
     if distance == 0 || distance > MAX_DISTANCE {
         return None;
@@ -146,11 +189,21 @@ fn insert(input: &[u8], position: usize, table: &mut [Entry]) {
     let Some(key) = key_at(input, position) else {
         return;
     };
-    table[table_index(key)] = Entry {
-        key,
-        position: u32::try_from(position).expect("input is bounded to u32"),
-        occupied: true,
-    };
+    let entry = &mut table[table_index(key)];
+    let position = u32::try_from(position).expect("input is bounded to u32");
+    if entry.occupied && entry.key == key {
+        entry.previous_position = entry.position;
+        entry.has_previous = true;
+        entry.position = position;
+    } else {
+        *entry = Entry {
+            key,
+            position,
+            previous_position: 0,
+            has_previous: false,
+            occupied: true,
+        };
+    }
 }
 
 fn key_at(input: &[u8], position: usize) -> Option<u64> {
@@ -287,7 +340,7 @@ mod tests {
     #[test]
     fn repeated_data_creates_a_match_and_complete_accounting() {
         let input = b"abcdefgh01234567abcdefgh01234567";
-        let blocks = parse(input);
+        let blocks = parse(input, 1);
         assert!(
             blocks
                 .iter()
@@ -296,6 +349,30 @@ mod tests {
         let result = account(input, &blocks);
         assert_eq!(result.literal_bytes + result.match_bytes, input.len());
         assert!(result.candidate_bits().is_finite());
+    }
+
+    #[test]
+    fn older_candidate_can_produce_a_longer_match() {
+        let input = b"abcdefgh22222222abcdefgh11111111abcdefgh22222222";
+        let one = parse(input, 1);
+        let two = parse(input, 2);
+        let one_longest = one
+            .iter()
+            .filter_map(|block| match block {
+                Block::Match { length, .. } => Some(*length),
+                Block::Literal { .. } => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let two_longest = two
+            .iter()
+            .filter_map(|block| match block {
+                Block::Match { length, .. } => Some(*length),
+                Block::Literal { .. } => None,
+            })
+            .max()
+            .unwrap_or(0);
+        assert!(two_longest > one_longest);
     }
 
     #[test]

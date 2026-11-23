@@ -113,7 +113,17 @@ impl From<LzError> for LzStreamError {
 /// Encodes a complete RFC 0014 research artifact.
 #[must_use]
 pub fn encode_lz_artifact(input: &[u8]) -> Vec<u8> {
-    let blocks = parse(input);
+    encode_lz_artifact_with_candidates(input, 1)
+}
+
+/// Encodes a complete RFC 0015 two-candidate research artifact.
+#[must_use]
+pub fn encode_lz_two_candidate_artifact(input: &[u8]) -> Vec<u8> {
+    encode_lz_artifact_with_candidates(input, 2)
+}
+
+fn encode_lz_artifact_with_candidates(input: &[u8], candidates: usize) -> Vec<u8> {
+    let blocks = parse(input, candidates);
     let mut encoder = RangeEncoder::new();
     let mut model = Match8Model::new();
     let mut types = AdaptiveDistribution::new(3);
@@ -190,11 +200,32 @@ pub fn encode_lz_stream(
     mut input: impl Read + Seek,
     mut output: impl Write + Seek,
 ) -> Result<LzEncodeStats, LzStreamError> {
+    encode_lz_stream_with_candidates(&mut input, &mut output, 1)
+}
+
+/// Encodes an RFC 0015 two-candidate artifact with bounded memory.
+///
+/// # Errors
+///
+/// Returns an error for I/O failure, a nonempty output, or an input larger than
+/// the experimental format's `u32` encoder-position limit.
+pub fn encode_lz_two_candidate_stream(
+    mut input: impl Read + Seek,
+    mut output: impl Write + Seek,
+) -> Result<LzEncodeStats, LzStreamError> {
+    encode_lz_stream_with_candidates(&mut input, &mut output, 2)
+}
+
+fn encode_lz_stream_with_candidates(
+    input: &mut (impl Read + Seek),
+    output: &mut (impl Write + Seek),
+    candidates: usize,
+) -> Result<LzEncodeStats, LzStreamError> {
     let input_len = input.seek(SeekFrom::End(0))?;
     if input_len > u64::from(u32::MAX) {
         return Err(LzStreamError::InputTooLarge);
     }
-    let crc = stream_crc(&mut input, input_len)?;
+    let crc = stream_crc(input, input_len)?;
 
     if output.seek(SeekFrom::End(0))? != 0 {
         return Err(io::Error::new(
@@ -219,7 +250,7 @@ pub fn encode_lz_stream(
 
     while position < input_len {
         if let Some((length, distance)) =
-            find_match_stream(&mut source, position, input_len, &table)?
+            find_match_stream(&mut source, position, input_len, &table, candidates)?
         {
             if literal_length != 0 {
                 encode_literal_stream(
@@ -269,7 +300,7 @@ pub fn encode_lz_stream(
         )?;
     }
     encode_adaptive_streaming(&mut encoder, &mut types, 2)?;
-    let (mut output, payload_len) = encoder.finish()?;
+    let (output, payload_len) = encoder.finish()?;
     let artifact_len = (HEADER_LEN as u64)
         .checked_add(payload_len)
         .ok_or(LzError::InvalidArtifact)?;
@@ -592,11 +623,21 @@ fn insert_stream<R: Read + Seek>(
     let Some(key) = key_at_stream(input, position)? else {
         return Ok(());
     };
-    table[table_index(key)] = Entry {
-        key,
-        position: u32::try_from(position).map_err(|_| LzError::InvalidArtifact)?,
-        occupied: true,
-    };
+    let entry = &mut table[table_index(key)];
+    let position = u32::try_from(position).map_err(|_| LzError::InvalidArtifact)?;
+    if entry.occupied && entry.key == key {
+        entry.previous_position = entry.position;
+        entry.has_previous = true;
+        entry.position = position;
+    } else {
+        *entry = Entry {
+            key,
+            position,
+            previous_position: 0,
+            has_previous: false,
+            occupied: true,
+        };
+    }
     Ok(())
 }
 
@@ -605,6 +646,7 @@ fn find_match_stream<R: Read + Seek>(
     position: u64,
     input_len: u64,
     table: &[Entry],
+    candidates: usize,
 ) -> Result<Option<(usize, usize)>, LzStreamError> {
     let Some(key) = key_at_stream(input, position)? else {
         return Ok(None);
@@ -613,7 +655,24 @@ fn find_match_stream<R: Read + Seek>(
     if !entry.occupied || entry.key != key {
         return Ok(None);
     }
-    let candidate = u64::from(entry.position);
+    let mut best = stream_match_at(input, position, input_len, entry.position)?;
+    if candidates == 2 && entry.has_previous {
+        if let Some(older) = stream_match_at(input, position, input_len, entry.previous_position)? {
+            if best.is_none_or(|latest| older.0 > latest.0) {
+                best = Some(older);
+            }
+        }
+    }
+    Ok(best)
+}
+
+fn stream_match_at<R: Read + Seek>(
+    input: &mut PageCache<R>,
+    position: u64,
+    input_len: u64,
+    candidate: u32,
+) -> Result<Option<(usize, usize)>, LzStreamError> {
+    let candidate = u64::from(candidate);
     let Some(distance) = position
         .checked_sub(candidate)
         .filter(|&value| value != 0 && value <= MAX_DISTANCE_U64)
@@ -664,6 +723,8 @@ fn encode_literal_stream<W: Write, R: Read + Seek>(
 struct Entry {
     key: u64,
     position: u32,
+    previous_position: u32,
+    has_previous: bool,
     occupied: bool,
 }
 
@@ -673,14 +734,14 @@ enum Block {
     Match { length: usize, distance: usize },
 }
 
-fn parse(input: &[u8]) -> Vec<Block> {
+fn parse(input: &[u8], candidates: usize) -> Vec<Block> {
     let mut table = vec![Entry::default(); TABLE_LEN];
     let mut blocks = Vec::new();
     let mut literal_start = 0;
     let mut literal_length = 0;
     let mut position = 0;
     while position < input.len() {
-        if let Some((length, distance)) = find_match(input, position, &table) {
+        if let Some((length, distance)) = find_match(input, position, &table, candidates) {
             if literal_length != 0 {
                 blocks.push(Block::Literal {
                     start: literal_start,
@@ -712,13 +773,30 @@ fn parse(input: &[u8]) -> Vec<Block> {
     blocks
 }
 
-fn find_match(input: &[u8], position: usize, table: &[Entry]) -> Option<(usize, usize)> {
+fn find_match(
+    input: &[u8],
+    position: usize,
+    table: &[Entry],
+    candidates: usize,
+) -> Option<(usize, usize)> {
     let key = key_at(input, position)?;
     let entry = table[table_index(key)];
     if !entry.occupied || entry.key != key {
         return None;
     }
-    let candidate = usize::try_from(entry.position).expect("input position fits usize");
+    let mut best = buffered_match_at(input, position, entry.position);
+    if candidates == 2 && entry.has_previous {
+        if let Some(older) = buffered_match_at(input, position, entry.previous_position) {
+            if best.is_none_or(|latest| older.0 > latest.0) {
+                best = Some(older);
+            }
+        }
+    }
+    best
+}
+
+fn buffered_match_at(input: &[u8], position: usize, candidate: u32) -> Option<(usize, usize)> {
+    let candidate = usize::try_from(candidate).expect("input position fits usize");
     let distance = position.checked_sub(candidate)?;
     if distance == 0 || distance > MAX_DISTANCE {
         return None;
@@ -735,11 +813,21 @@ fn insert(input: &[u8], position: usize, table: &mut [Entry]) {
     let Some(key) = key_at(input, position) else {
         return;
     };
-    table[table_index(key)] = Entry {
-        key,
-        position: u32::try_from(position).expect("encoder input is bounded to u32"),
-        occupied: true,
-    };
+    let entry = &mut table[table_index(key)];
+    let position = u32::try_from(position).expect("encoder input is bounded to u32");
+    if entry.occupied && entry.key == key {
+        entry.previous_position = entry.position;
+        entry.has_previous = true;
+        entry.position = position;
+    } else {
+        *entry = Entry {
+            key,
+            position,
+            previous_position: 0,
+            has_previous: false,
+            occupied: true,
+        };
+    }
 }
 
 fn key_at(input: &[u8], position: usize) -> Option<u64> {
@@ -1413,6 +1501,7 @@ mod tests {
 
     use super::{
         LzError, decode_lz_artifact, decode_lz_stream, encode_lz_artifact, encode_lz_stream,
+        encode_lz_two_candidate_artifact, encode_lz_two_candidate_stream,
     };
     use crate::HEADER_LEN;
 
@@ -1492,5 +1581,19 @@ mod tests {
 
         let mut nonempty = Cursor::new(vec![0_u8]);
         assert!(encode_lz_stream(Cursor::new(b"input"), &mut nonempty).is_err());
+    }
+
+    #[test]
+    fn two_candidate_artifacts_round_trip_and_stream_identically() {
+        let input = b"abcdefgh22222222abcdefgh11111111abcdefgh22222222".repeat(1_000);
+        let artifact = encode_lz_two_candidate_artifact(&input);
+        assert_eq!(
+            decode_lz_artifact(&artifact, u64::try_from(input.len()).unwrap()).unwrap(),
+            input
+        );
+
+        let mut streamed = Cursor::new(Vec::new());
+        encode_lz_two_candidate_stream(Cursor::new(&input), &mut streamed).unwrap();
+        assert_eq!(streamed.into_inner(), artifact);
     }
 }

@@ -3,7 +3,7 @@ use std::io::BufWriter;
 use std::path::Path;
 use std::{env, process::ExitCode};
 
-use tak_tensor::{decode_lz_stream, encode_lz_stream};
+use tak_tensor::{decode_lz_stream, encode_lz_stream, encode_lz_two_candidate_stream};
 
 fn main() -> ExitCode {
     match run() {
@@ -19,6 +19,7 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.as_slice() {
         [command, input, output] if command == "encode" => encode(input, output),
+        [command, input, output] if command == "encode-two" => encode_two(input, output),
         [command, input, output, option, limit]
             if command == "decode" && option == "--max-output" =>
         {
@@ -28,9 +29,21 @@ fn run() -> Result<(), String> {
             decode(input, output, limit)
         }
         _ => {
-            Err("expected encode INPUT OUTPUT or decode INPUT OUTPUT --max-output BYTES".to_owned())
+            Err(
+                "expected encode INPUT OUTPUT, encode-two INPUT OUTPUT, or decode INPUT OUTPUT --max-output BYTES"
+                    .to_owned(),
+            )
         }
     }
+}
+
+fn encode_two(input: &str, output: &str) -> Result<(), String> {
+    require_new_output(output)?;
+    let input = File::open(input).map_err(|error| error.to_string())?;
+    let output = create_new(output)?;
+    encode_lz_two_candidate_stream(input, output)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn encode(input: &str, output: &str) -> Result<(), String> {

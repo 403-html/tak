@@ -212,6 +212,14 @@ Zstandard-19, 65,756,437 bytes above xz, and 84,430,633 bytes above M2.
 Encoding reached only 1.65 MB/s and decoding 7.21 MB/s, so ratio and throughput
 both remain research blockers.
 
+RFC 0015 tests one additional exact-key occurrence without changing the
+decoder. Its frozen parser improves all five Silesia development groups and all
+18 Calgary files. The complete Calgary artifact is 996,359 bytes, 8,319 bytes
+smaller than RFC 0014 and 4,336 bytes smaller than the prior TAK record. It
+remains 75,286 bytes above Zstandard-19 and 110,499 bytes above xz. Controlled
+encoding is 1.14x slower; decoding is 1.02x slower. One bounded enwik9
+measurement is permitted before deciding whether to retain the gain there.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console
