@@ -34,12 +34,33 @@ It remains 75,286 bytes above Zstandard-19 and 110,499 bytes above xz. Peak
 process RSS is 49,952 KiB. Timings use one warm-up and five measured aggregate
 repetitions.
 
+## Enwik9 result
+
+At commit `f527fd5`, the bounded two-candidate encoder produces a
+276,339,048-byte artifact. It improves RFC 0014 by 5,091,585 bytes, or 1.81%,
+and RFC 0009 by 39,239,718 bytes, or 12.43%. The input and restored SHA-256 are
+both `159b85351e5f76e60cbe32e04c677847a9ecba3adc79addab6f4c6c7aa3744bc`.
+The artifact SHA-256 is
+`90228bdd3fd2b54c9bc87493adecf4ef33b88a7495af6b70d24457a826f5c55c`.
+
+Encoding takes 715.42 seconds at 1.40 MB/s with 54,436 KiB peak RSS. Decoding
+takes 160.91 seconds at 6.21 MB/s with 94,992 KiB peak RSS. These are one-run
+screening results without a warm-up. Both throughput targets fail.
+
+The artifact beats M1 by 45,660,952 bytes. It remains 41,010,109 bytes above
+Zstandard-19, 60,664,852 bytes above xz, and 79,339,048 bytes above M2. Matching
+xz requires a further 21.95% reduction from the current artifact.
+
+Raw data is in
+`benchmarks/reports/raw/2026-11-23-lz-two-candidate-enwik9.tsv`, SHA-256
+`08152a74c67cf9c7682d72d8f934afd043b44da105b02534af6a224f81341446`.
+
 ## Limitations and next experiment
 
-The result does not establish an enwik9 gain. Run the frozen bounded encoder
-once on enwik9 and verify the complete restored SHA-256. Reject further
-candidate-count expansion even if enwik9 improves. Later ratio work must
-identify another measured mechanism.
+The result establishes an enwik9 gain but does not approach xz. Reject further
+candidate-count expansion. Later ratio work must identify another measured
+mechanism. Profile token costs and parser misses before proposing a format
+change.
 
 This classical parser result does not authorize tensor work. A new tensor RFC
 must still name a specific longer-context dependency that the rejected bigram

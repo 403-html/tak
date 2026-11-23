@@ -1,6 +1,6 @@
 # RFC 0015: Two-candidate LZ opportunity gate
 
-- Status: Calgary artifact accepted; enwik9 pending
+- Status: Bounded enwik9 result accepted
 - Date: 2026-11-23
 - Scope: Classical parser diagnostic only
 - Format change: None
@@ -105,3 +105,28 @@ SHA-256
 Controlled aggregate rows are in
 `benchmarks/reports/raw/2026-11-23-lz-two-candidate-controlled.tsv`, SHA-256
 `d097ccf7a0b3c3f3f291e9d84c174813322c6ba272d06847f60b5831829fada9`.
+
+## 10. Enwik9 result
+
+The bounded two-candidate encoder produces a 276,339,048-byte enwik9 artifact.
+It is 5,091,585 bytes, or 1.81%, smaller than RFC 0014 and 39,239,718 bytes, or
+12.43%, smaller than RFC 0009. The decoder restores the exact one-billion-byte
+input and SHA-256.
+
+Encoding takes 715.42 seconds, or 1.40 MB/s, with 54,436 KiB peak RSS. Decoding
+takes 160.91 seconds, or 6.21 MB/s, with 94,992 KiB peak RSS. These are
+single-run measurements. Memory remains bounded, but both throughput targets
+fail by large margins.
+
+RFC 0015 beats M1 by 45,660,952 bytes. It remains 41,010,109 bytes larger than
+Zstandard-19, 60,664,852 bytes larger than xz, and 79,339,048 bytes larger than
+M2. It must remove 21.95% of its current bytes to match xz and 28.71% to reach
+M2.
+
+Accept RFC 0015 as the best measured TAK ratio profile. Stop candidate-count
+tuning. A later ratio experiment MUST identify and gate a different mechanism.
+The tensor restriction in Section 5 remains in force.
+
+Raw enwik9 data is in
+`benchmarks/reports/raw/2026-11-23-lz-two-candidate-enwik9.tsv`, SHA-256
+`08152a74c67cf9c7682d72d8f934afd043b44da105b02534af6a224f81341446`.

@@ -16,14 +16,14 @@ The current classical research model beats gzip -9 on Calgary and enwik9, but re
 |---|---:|
 | xz -9 | 215.67 MB |
 | Zstandard -19 | 235.33 MB |
-| **TAK (RFC 0014)** | **281.43 MB** |
+| **TAK (RFC 0015)** | **276.34 MB** |
 | gzip -9 | 322.59 MB |
 
-**TAK performance:** 1.65 MB/s compression with 46,240 KiB peak RSS and
-7.21 MB/s decompression with 95,004 KiB peak RSS. Exact SHA-256-verified
+**TAK performance:** 1.40 MB/s compression with 54,436 KiB peak RSS and
+6.21 MB/s decompression with 94,992 KiB peak RSS. Exact SHA-256-verified
 restoration. This bounded reference path prioritizes evidence over speed.
 
-[Full benchmark results](research/experiments/2026-11-23-entropy-coded-lz-artifact.md)
+[Full benchmark results](research/experiments/2026-11-23-two-candidate-lz.md)
 
 ## Build
 
@@ -217,8 +217,13 @@ decoder. Its frozen parser improves all five Silesia development groups and all
 18 Calgary files. The complete Calgary artifact is 996,359 bytes, 8,319 bytes
 smaller than RFC 0014 and 4,336 bytes smaller than the prior TAK record. It
 remains 75,286 bytes above Zstandard-19 and 110,499 bytes above xz. Controlled
-encoding is 1.14x slower; decoding is 1.02x slower. One bounded enwik9
-measurement is permitted before deciding whether to retain the gain there.
+encoding is 1.14x slower; decoding is 1.02x slower.
+
+The bounded RFC 0015 enwik9 artifact is 276,339,048 bytes, 5,091,585 bytes or
+1.81% smaller than RFC 0014. It restores all one billion bytes exactly. It
+beats M1 by 45,660,952 bytes but remains 41,010,109 bytes above Zstandard-19,
+60,664,852 bytes above xz, and 79,339,048 bytes above M2. Do not test more
+candidate counts; the next ratio experiment must identify another mechanism.
 
 Reproduce the RFC 0002 tensor artifact with:
 
