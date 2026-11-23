@@ -8,7 +8,6 @@ use std::num::{NonZeroU16, NonZeroU32};
 
 const ALPHABET_SIZE: usize = 256;
 const GROUP_SIZE: usize = 16;
-/// Initial group sum of a dense distribution with unit frequencies.
 const UNIT_GROUP_SUM: u16 = 16;
 const _: () = assert!(UNIT_GROUP_SUM as usize == GROUP_SIZE);
 const GROUP_COUNT: usize = ALPHABET_SIZE / GROUP_SIZE;
@@ -59,10 +58,6 @@ pub trait ByteModel {
     fn total(&self) -> u32;
 }
 
-/// Sums of each group of `GROUP_SIZE` consecutive symbol frequencies.
-///
-/// Group sums only accelerate cumulative-frequency search. They never change
-/// a coded range.
 fn group_sums<const N: usize>(frequencies: &[u16; N]) -> [u16; GROUP_COUNT] {
     let mut groups = [0_u16; GROUP_COUNT];
     for (group, chunk) in groups.iter_mut().zip(frequencies.chunks_exact(GROUP_SIZE)) {
@@ -71,7 +66,6 @@ fn group_sums<const N: usize>(frequencies: &[u16; N]) -> [u16; GROUP_COUNT] {
     groups
 }
 
-/// Returns the cumulative frequency below `index` using group sums.
 fn prefix_sum(
     frequencies: &[u16; ALPHABET_SIZE],
     groups: &[u16; GROUP_COUNT],

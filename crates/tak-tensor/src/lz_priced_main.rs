@@ -1,5 +1,3 @@
-//! RFC 0016 complete-artifact gate: price-based parser versus RFC 0015.
-
 use std::{env, fs, path::PathBuf, process::ExitCode, time::Instant};
 
 use tak_tensor::{decode_lz_artifact, encode_lz_priced_artifact, encode_lz_two_candidate_artifact};

@@ -1,8 +1,3 @@
-//! RFC 0016 price-based parser for the unchanged RFC 0014 `TKLZ` syntax.
-//!
-//! The parser changes only encoder choices. Every block it emits is a valid
-//! RFC 0014 block, so the existing decoder restores the output.
-
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 use tak_context::{ByteModel, Match8Model};
@@ -13,22 +8,17 @@ use super::{
     encode_bucket_streaming, key_at, stream_crc, table_index,
 };
 
-/// Maximum number of positions in one dynamic-programming segment.
 const SEGMENT_LEN: usize = 65_536;
-/// A candidate of at least this length is taken immediately.
 const NICE_LENGTH: usize = 1_024;
-/// Every truncated length in `MIN_MATCH..MIN_MATCH + SHORT_LENGTHS` is priced.
 const SHORT_LENGTHS: usize = 64;
 const SYMBOLS: usize = 32;
 
-/// One table candidate at a segment position.
 #[derive(Clone, Copy, Default)]
 struct Candidate {
     length: u32,
     distance: u32,
 }
 
-/// Static prices, in bits, taken from the coder state at segment start.
 struct Prices {
     types: [f64; 3],
     literal_lengths: [f64; SYMBOLS],
@@ -76,7 +66,6 @@ fn bucket_price(prices: &[f64; SYMBOLS], value: usize) -> f64 {
     prices[bucket] + f64::from(u32::try_from(bucket).expect("bucket is below 64"))
 }
 
-/// Mirror of the encoder's adaptive metadata distributions.
 struct CoderState {
     types: AdaptiveDistribution,
     literal_lengths: AdaptiveDistribution,
@@ -84,7 +73,6 @@ struct CoderState {
     distances: AdaptiveDistribution,
 }
 
-/// Emits blocks in encoder order and keeps the mirrored coder state current.
 struct Emitter {
     state: CoderState,
     blocks: Vec<Block>,
@@ -141,21 +129,13 @@ impl Emitter {
     }
 }
 
-/// Random-access encoder input for the priced parser.
-///
-/// Implementations may fail only for I/O reasons. Every position passed to a
-/// method is below `len`.
 pub(super) trait PricedInput {
-    /// Returns the complete input length.
     fn len(&self) -> usize;
 
-    /// Returns the byte at `position`.
     fn byte(&mut self, position: usize) -> Result<u8, LzStreamError>;
 
-    /// Returns the big-endian 8-byte key at `position`, if eight bytes remain.
     fn key(&mut self, position: usize) -> Result<Option<u64>, LzStreamError>;
 
-    /// Extends a match of at least `MIN_MATCH` bytes up to `limit` bytes.
     fn match_length(
         &mut self,
         position: usize,
@@ -164,7 +144,6 @@ pub(super) trait PricedInput {
     ) -> Result<usize, LzStreamError>;
 }
 
-/// In-memory input.
 struct SliceInput<'a>(&'a [u8]);
 
 impl PricedInput for SliceInput<'_> {
@@ -194,7 +173,6 @@ impl PricedInput for SliceInput<'_> {
     }
 }
 
-/// Parses `input` with segment-wise minimum-price dynamic programming.
 pub(super) fn parse_priced(input: &[u8]) -> Vec<Block> {
     let mut blocks = Vec::new();
     parse_priced_with(&mut SliceInput(input), |_, block| {
@@ -205,11 +183,6 @@ pub(super) fn parse_priced(input: &[u8]) -> Vec<Block> {
     blocks
 }
 
-/// Runs the priced parser and passes every block to `sink` in encoder order.
-///
-/// The parser retains at most one segment of candidates and prices. Blocks are
-/// passed to `sink` after each segment, except a literal run that may continue
-/// into the next segment.
 pub(super) fn parse_priced_with<I: PricedInput>(
     input: &mut I,
     mut sink: impl FnMut(&mut I, Block) -> Result<(), LzStreamError>,
@@ -262,20 +235,10 @@ pub(super) fn parse_priced_with<I: PricedInput>(
     Ok(())
 }
 
-/// Ring-buffer length for bounded input. It holds the 64 MiB match window, one
-/// maximum match of lookahead, and one read chunk.
 const RING_LEN: usize = 128 * 1024 * 1024;
-/// Sequential reads use `ring_len / READ_CHUNKS_PER_RING` bytes, so a read
-/// never wraps the ring.
 const READ_CHUNKS_PER_RING: usize = 128;
-/// Page size for rereading literal bytes older than the ring.
 const OLD_PAGE_LEN: usize = 64 * 1024;
 
-/// Bounded seekable input with a sequential ring buffer.
-///
-/// Positions within `RING_LEN` bytes of the read frontier come from the ring.
-/// Older positions, which only long literal runs need, are reread from the
-/// input one page at a time.
 struct WindowInput<R> {
     input: R,
     len: usize,
@@ -288,10 +251,6 @@ struct WindowInput<R> {
 }
 
 impl<R: Read + Seek> WindowInput<R> {
-    /// Creates an input with a power-of-two ring of `ring_len` bytes.
-    ///
-    /// The ring must exceed the match window plus `MAX_MATCH` and one read, or
-    /// every match distance in the input must be that much smaller than it.
     fn new(input: R, len: usize, ring_len: usize) -> Self {
         debug_assert!(ring_len.is_power_of_two() && ring_len >= READ_CHUNKS_PER_RING);
         Self {
@@ -306,7 +265,6 @@ impl<R: Read + Seek> WindowInput<R> {
         }
     }
 
-    /// Reads sequentially until `end` bytes, or the whole input, are loaded.
     fn ensure(&mut self, end: usize) -> Result<(), LzStreamError> {
         let end = end.min(self.len);
         while self.loaded < end {
@@ -380,12 +338,6 @@ impl<R: Read + Seek> PricedInput for WindowInput<R> {
     }
 }
 
-/// Encodes an RFC 0016 artifact with bounded memory.
-///
-/// The encoder retains a 128 MiB input ring, two RFC 0009 byte models, the
-/// match table, and one parser segment. It does not retain the complete input,
-/// block list, or arithmetic payload. The artifact is byte-identical to
-/// [`super::encode_lz_priced_artifact`].
 pub(super) fn encode_priced_stream(
     input: &mut (impl Read + Seek),
     output: &mut (impl Write + Seek),
@@ -491,8 +443,6 @@ fn insert_key(table: &mut [Entry], key: Option<u64>, position: usize) {
     }
 }
 
-/// Returns the newest candidate first. The older candidate is kept only when
-/// it is strictly longer. A length of zero marks an absent candidate.
 fn find_candidates<I: PricedInput>(
     input: &mut I,
     position: usize,
@@ -552,7 +502,6 @@ fn model_bits(model: &Match8Model, byte: u8) -> f64 {
     f64::from(total).log2() - f64::from(high - low).log2()
 }
 
-/// How a dynamic-programming state was reached.
 #[derive(Clone, Copy)]
 enum Step {
     Unreached,
@@ -567,7 +516,6 @@ enum Step {
     },
 }
 
-/// Chooses the minimum-price block sequence for one segment and emits it.
 fn solve_segment(
     start: usize,
     candidates: &[[Candidate; 2]],
@@ -716,8 +664,6 @@ mod tests {
 
     #[test]
     fn literal_runs_older_than_the_ring_are_reread() {
-        // A long random literal run exceeds a 64 KiB test ring. The only
-        // repeats are within a few hundred bytes, inside the ring.
         let mut input = noise(300_000, 11);
         let tail = input[299_000..299_600].to_vec();
         input.extend_from_slice(&tail);

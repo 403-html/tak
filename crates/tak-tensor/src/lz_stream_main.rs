@@ -53,9 +53,6 @@ fn encode_two(input: &str, output: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// Encodes with the RFC 0016 price-based parser.
-///
-/// This research path reads the complete input. It is not a bounded encoder.
 fn encode_priced(input: &str, output: &str) -> Result<(), String> {
     require_new_output(output)?;
     let input = std::fs::read(input).map_err(|error| error.to_string())?;
@@ -70,7 +67,6 @@ fn encode_priced(input: &str, output: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// Encodes with the RFC 0016 price-based parser and bounded memory.
 fn encode_priced_bounded(input: &str, output: &str) -> Result<(), String> {
     require_new_output(output)?;
     let input = File::open(input).map_err(|error| error.to_string())?;

@@ -1,7 +1,3 @@
-//! RFC 0016 token-cost and parser-miss profile for the RFC 0015 LZ parser.
-//!
-//! This is an ideal-accounting diagnostic. It does not produce an artifact.
-
 use std::{env, fs, path::PathBuf, process::ExitCode};
 
 use tak_context::{ByteModel, Match8Model};
@@ -86,12 +82,9 @@ enum Block {
     Match { length: usize, distance: usize },
 }
 
-/// The frozen RFC 0015 parse plus one-step lazy observations.
 struct Parsed {
     blocks: Vec<Block>,
-    /// Matches for which the next position offers a strictly longer match.
     lazy_longer: usize,
-    /// Sum of `next_length - length` over `lazy_longer` matches.
     lazy_extra_bytes: usize,
 }
 
@@ -116,7 +109,6 @@ fn parse(input: &[u8]) -> Parsed {
             }
             parsed.blocks.push(Block::Match { length, distance });
             insert(input, position, &mut table);
-            // Observe, without acting on it, what a one-step lazy parser would see.
             if let Some((next_length, _)) = find_match(input, position + 1, &table) {
                 if next_length > length {
                     parsed.lazy_longer += 1;
@@ -229,7 +221,6 @@ impl AdaptiveDistribution {
     }
 }
 
-/// Ideal bucket cost split into adaptive bucket bits and raw remainder bits.
 struct BucketCost {
     bucket_bits: f64,
     raw_bits: f64,
@@ -260,28 +251,17 @@ struct Profile {
     distance_bucket_bits: f64,
     distance_raw_bits: f64,
     literal_bits: f64,
-    /// Matches whose distance equals the previous match distance.
     repeat0_matches: usize,
-    /// Distance bits currently spent on `repeat0_matches`.
     repeat0_distance_bits: f64,
-    /// Matches whose distance equals one of the last four distinct distances.
     repeat4_matches: usize,
-    /// Distance bits currently spent on `repeat4_matches`.
     repeat4_distance_bits: f64,
-    /// Literal blocks that directly follow a match ended by a mismatch.
     excludable_literals: usize,
-    /// Ideal bits saved by removing the known mismatching byte from those literals.
     exclusion_saved_bits: f64,
-    /// Excludable literals where the byte model predicted the excluded byte.
     exclusion_predicted: usize,
     lazy_longer: usize,
     lazy_extra_bytes: usize,
-    /// Matches whose type, length, and distance bits exceed the byte-model bits
-    /// of the bytes they cover.
     unprofitable_matches: usize,
-    /// Bytes covered by `unprofitable_matches`.
     unprofitable_match_bytes: usize,
-    /// Sum of token bits minus covered byte-model bits over `unprofitable_matches`.
     unprofitable_excess_bits: f64,
 }
 
@@ -379,7 +359,6 @@ fn account(input: &[u8], parsed: &Parsed) -> Profile {
     let mut match_lengths = AdaptiveDistribution::new(32);
     let mut distances = AdaptiveDistribution::new(32);
     let mut recent: Vec<usize> = Vec::with_capacity(REPEAT_SLOTS);
-    // Byte that the previous match would have produced next, when it ended by mismatch.
     let mut excluded: Option<u8> = None;
     let mut position = 0;
     for block in &parsed.blocks {
@@ -464,7 +443,6 @@ fn model_bits(model: &Match8Model, byte: u8) -> f64 {
     f64::from(total).log2() - f64::from(high - low).log2()
 }
 
-/// Ideal saving from coding `byte` with `skip` removed from the distribution.
 fn exclusion_bits(model: &Match8Model, byte: u8, skip: u8) -> f64 {
     let (_, _, total) = model.range(byte);
     let (low, high, _) = model.range(skip);

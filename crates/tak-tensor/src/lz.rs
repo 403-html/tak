@@ -1368,12 +1368,6 @@ impl<R: Read> StreamRangeDecoder<R> {
         Ok(())
     }
 
-    /// Applies every pending RFC 0014 renormalization step at once.
-    ///
-    /// Equal leading bits of `low` and `high` are the half-interval steps.
-    /// After them the leading bits differ, so only quarter steps can follow.
-    /// A quarter step equals a one-bit shift followed by inverting bit 31.
-    /// The result is identical to applying the single-bit steps in order.
     #[inline]
     fn renormalize(&mut self) -> Result<(), LzStreamError> {
         let matching = (self.low ^ self.high).leading_zeros() - 32;
@@ -1422,8 +1416,6 @@ impl<R: Read> StreamBitReader<R> {
         }
     }
 
-    /// Loads up to eight payload bytes, most significant first. Bytes after
-    /// the end of input read as zero.
     fn refill(&mut self) -> io::Result<()> {
         if self.filled - self.position >= 8 {
             let bytes: [u8; 8] = self.buffer[self.position..self.position + 8]
@@ -1440,7 +1432,6 @@ impl<R: Read> StreamBitReader<R> {
         Ok(())
     }
 
-    /// Returns the next payload byte, or zero after the end of input.
     fn next_byte(&mut self) -> io::Result<u8> {
         if self.position == self.filled {
             self.position = 0;
@@ -1460,7 +1451,6 @@ impl<R: Read> StreamBitReader<R> {
         Ok(byte)
     }
 
-    /// Returns the next `count` payload bits, most significant first.
     #[inline]
     fn bits(&mut self, count: u32) -> io::Result<u64> {
         debug_assert!(count <= 32);
@@ -1610,7 +1600,6 @@ mod tests {
             let mut a = next() & RANGE_MAX;
             let mut b = next() & RANGE_MAX;
             if case % 3 == 0 {
-                // Force long runs of shared leading bits and quarter steps.
                 let shift = next() % 32;
                 b = (a & !((1 << shift) - 1)) | (b & ((1 << shift) - 1));
                 if case % 2 == 0 {
