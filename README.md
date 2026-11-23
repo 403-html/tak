@@ -16,14 +16,14 @@ The current classical research model beats gzip -9 on Calgary and enwik9, but re
 |---|---:|
 | xz -9 | 215.67 MB |
 | Zstandard -19 | 235.33 MB |
-| **TAK (RFC 0015)** | **276.34 MB** |
+| **TAK (RFC 0016)** | **251.98 MB** |
 | gzip -9 | 322.59 MB |
 
-**TAK performance:** 1.40 MB/s compression with 54,436 KiB peak RSS and
-6.21 MB/s decompression with 94,992 KiB peak RSS. Exact SHA-256-verified
+**TAK performance:** 1.84 MB/s compression with 220,968 KiB peak RSS and
+8.95 MB/s decompression with 96,064 KiB peak RSS. Exact SHA-256-verified
 restoration. This bounded reference path prioritizes evidence over speed.
 
-[Full benchmark results](research/experiments/2026-11-23-two-candidate-lz.md)
+[Full benchmark results](research/experiments/2026-11-23-price-based-lz-parser.md)
 
 ## Build
 
@@ -236,8 +236,11 @@ than Zstandard-19 and 64,908 bytes more than xz.
 The first controlled decode-time ratio was 1.102. The limit was 1.10. A
 decoder-only change then decreased the ratio to 1.053. It did not change any
 artifact byte. Thus RFC 0016 is now the smallest validated TAK Calgary result.
-A bounded encoder makes the same artifacts. There is no enwik9 result yet, so
-the table above still shows RFC 0015.
+The bounded encoder then produced a 251,978,489-byte enwik9 artifact and
+restored all one billion bytes exactly. This is 24,360,559 bytes, or 8.82%,
+smaller than RFC 0015. It beats M1 by 70,021,511 bytes, but remains 16,649,550
+bytes above Zstandard-19, 36,304,293 bytes above xz, and 54,978,489 bytes
+above M2. Encoding reached 1.84 MB/s and decoding reached 8.95 MB/s.
 
 Reproduce the RFC 0002 tensor artifact with:
 

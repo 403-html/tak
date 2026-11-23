@@ -1,6 +1,6 @@
 # RFC 0016: Price-based LZ parser gate
 
-- Status: Calgary validated after decoder speed-up; enwik9 unmeasured
+- Status: Accepted; Calgary and enwik9 validated
 - Date: 2026-11-23
 - Scope: Classical encoder parser only
 - Format change: None
@@ -189,8 +189,8 @@ counts come from a separate instrumented run, not from the timed run.
 A follow-up MUST do one of two things. It can set a new decode-time limit
 before a new measurement. Or it can decrease the decoder cost of literals. Do
 not tune the parser parameters on these results. An enwik9 result requires a
-bounded priced encoder. The current research encoder reads all of the input
-into memory, so there is no enwik9 result.
+bounded priced encoder. The research encoder available at this stage read all
+of the input into memory. Section 12 records the later bounded result.
 
 Raw profile rows are in
 `benchmarks/reports/raw/2026-11-23-lz-profile-silesia.tsv`, SHA-256
@@ -250,8 +250,8 @@ matches share. Thus the ratio increased, but both decoders became faster. The
 raw file keeps this run.
 
 RFC 0016 now passes all validation conditions in Section 4. It is the smallest
-measured TAK Calgary result. It is not the README profile, because there is no
-enwik9 result.
+measured TAK Calgary result. The bounded enwik9 validation in Section 12 later
+makes it the README profile.
 
 Controlled decoder rows are in
 `benchmarks/reports/raw/2026-11-23-lz-priced-decoder-controlled.tsv`, SHA-256
@@ -280,9 +280,9 @@ same session, the bounded RFC 0015 encode took 22.18 seconds and its decode
 took 7.45 seconds. These are single screening runs. The Mozilla file includes
 the development tail, so this result is not validation evidence.
 
-The bounded encoder agrees with the memory rule for enwik9. There is still no
-enwik9 result, because the measurement host could not get the enwik9 file. Do
-the measurement once, with no changes, with these commands:
+The bounded encoder agrees with the memory rule for enwik9. The first
+measurement host could not get the enwik9 file. Section 12 records the later
+measurement, made once with no changes and with these commands:
 
 ```console
 target/release/tak-lz-stream encode-priced-bounded enwik9 enwik9.tklz
@@ -293,3 +293,25 @@ target/release/tak-lz-stream decode enwik9.tklz enwik9.out \
 Raw rows are in
 `benchmarks/reports/raw/2026-11-23-lz-priced-bounded-mozilla.tsv`, SHA-256
 `07b9fd18525e987bf9730ff96c302fa9975437003ea9a4fd6b7592150af3ff25`.
+
+## 12. enwik9 validation
+
+The frozen bounded encoder produced a 251,978,489-byte enwik9 artifact. This
+is 24,360,559 bytes, or 8.82%, smaller than RFC 0015. Encoding took 542.910
+seconds at 1.84 MB/s with 220,968 KiB peak RSS. Decoding took 111.675 seconds
+at 8.95 MB/s with 96,064 KiB peak RSS. The decoder restored all
+1,000,000,000 bytes exactly. The input and restored SHA-256 values are both
+`159b85351e5f76e60cbe32e04c677847a9ecba3adc79addab6f4c6c7aa3744bc`.
+
+The artifact is 70,613,499 bytes smaller than gzip -9. It remains 16,649,550
+bytes larger than Zstandard level 19 and 36,304,293 bytes larger than xz -9.
+It is 54,978,489 bytes above M2. This is one screening run, not a publishable
+throughput measurement.
+
+RFC 0016 is accepted as the best measured TAK profile. Do not tune its parser
+parameters on this result. A later ratio RFC must identify and measure a new
+mechanism.
+
+The raw row is in
+`benchmarks/reports/raw/2026-11-23-lz-priced-enwik9.tsv`, SHA-256
+`1db4aba7454a1c37231efe8f1fa33f0be8ada6963affe69caedde0b974459694`.
