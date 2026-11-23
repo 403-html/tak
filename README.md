@@ -180,6 +180,13 @@ but still lost to the stronger classical control on every measured group.
 Quantization was accurate; representation quality and metadata were the
 failures. Higher ranks and more epochs are not justified by this experiment.
 
+RFC 0014 returns to a classical entropy-coded LZ mechanism. Its fixed greedy
+parser passed four of five Silesia development groups with 0.2757 aggregate
+ideal bits per byte saved. Frozen Calgary validation remained positive but
+saved only about 23,860 ideal bytes, far below the 143,620-byte RFC 0009-to-xz
+gap. One complete artifact is permitted to test whether this modest margin
+survives integer coding; no xz or M2 claim follows from the diagnostic.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console
