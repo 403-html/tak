@@ -83,6 +83,10 @@ path = "src/lz_profile_main.rs"
 name = "tak-lz-priced-gate"
 path = "src/lz_priced_main.rs"
 
+[[bin]]
+name = "tak-lz-priced-profile"
+path = "src/lz_priced_profile_main.rs"
+
 [dependencies]
 tak-codecs = { path = "../tak-codecs" }
 tak-context = { path = "../tak-context" }

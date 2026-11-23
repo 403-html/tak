@@ -69,6 +69,45 @@ pub struct LzEncodeStats {
     pub artifact_bytes: u64,
 }
 
+/// Upper-bound diagnostics for mechanisms not used by the RFC 0016 parser.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LzPricedResidualProfile {
+    /// Number of input bytes covered by the parse.
+    pub input_bytes: usize,
+    /// Number of literal blocks.
+    pub literal_blocks: usize,
+    /// Number of match blocks.
+    pub match_blocks: usize,
+    /// Number of bytes coded as literals.
+    pub literal_bytes: usize,
+    /// Number of bytes copied by matches.
+    pub match_bytes: usize,
+    /// Ideal bucket and remainder bits for all match distances.
+    pub distance_bits: f64,
+    /// Matches that repeat the immediately preceding distance.
+    pub repeat0_matches: usize,
+    /// Distance bits used by immediately repeated distances.
+    pub repeat0_distance_bits: f64,
+    /// Matches that use one of the four most recent distances.
+    pub repeat4_matches: usize,
+    /// Distance bits used by one of the four most recent distances.
+    pub repeat4_distance_bits: f64,
+    /// First literals whose preceding match source byte can be excluded.
+    pub excludable_literals: usize,
+    /// Ideal byte-model bits saved if those source bytes are excluded.
+    pub exclusion_saved_bits: f64,
+    /// Ideal RFC 0009 model bits for bytes emitted as literals.
+    pub literal_model_bits: f64,
+    /// Ideal literal bits after adding one fixed bonus for the older source.
+    pub two_source_literal_bits: f64,
+    /// Literal events where the latest and older exact-suffix sources disagree.
+    pub two_source_disagreements: usize,
+    /// Disagreement events where the latest source predicts the literal.
+    pub latest_source_hits: usize,
+    /// Disagreement events where the older source predicts the literal.
+    pub older_source_hits: usize,
+}
+
 /// Errors produced by bounded RFC 0014 streaming decode.
 #[derive(Debug)]
 pub enum LzStreamError {
@@ -145,6 +184,146 @@ pub fn encode_lz_priced_stream(
     mut output: impl Write + Seek,
 ) -> Result<LzEncodeStats, LzStreamError> {
     priced::encode_priced_stream(&mut input, &mut output)
+}
+
+/// Profiles repeat-distance and post-match exclusion upper bounds for RFC 0016.
+#[must_use]
+pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
+    const REPEAT_SLOTS: usize = 4;
+
+    let blocks = priced::parse_priced(input);
+    let mut result = LzPricedResidualProfile {
+        input_bytes: input.len(),
+        ..LzPricedResidualProfile::default()
+    };
+    let mut model = Match8Model::new();
+    let mut distances = AdaptiveDistribution::new(32);
+    let mut recent = Vec::with_capacity(REPEAT_SLOTS);
+    let mut suffix_table = vec![Entry::default(); TABLE_LEN];
+    let mut excluded = None;
+    let mut position = 0;
+
+    for block in blocks {
+        match block {
+            Block::Literal { start, length } => {
+                debug_assert_eq!(start, position);
+                result.literal_blocks += 1;
+                result.literal_bytes += length;
+                if let (Some(skip), Some(&byte)) = (excluded, input.get(start)) {
+                    if skip != byte {
+                        let (_, _, total) = model.range(byte);
+                        let (low, high, _) = model.range(skip);
+                        result.excludable_literals += 1;
+                        result.exclusion_saved_bits +=
+                            f64::from(total).log2() - f64::from(total - (high - low)).log2();
+                    }
+                }
+                for byte_position in start..start + length {
+                    profile_priced_byte(
+                        input,
+                        byte_position,
+                        true,
+                        &mut model,
+                        &mut suffix_table,
+                        &mut result,
+                    );
+                }
+                position += length;
+                excluded = None;
+            }
+            Block::Match { length, distance } => {
+                result.match_blocks += 1;
+                result.match_bytes += length;
+                let bucket_u32 = distance.ilog2();
+                let bucket = usize::try_from(bucket_u32).unwrap_or(0);
+                let (low, high, total) = distances.range(bucket);
+                let distance_bits =
+                    f64::from(total).log2() - f64::from(high - low).log2() + f64::from(bucket_u32);
+                result.distance_bits += distance_bits;
+                distances.update(bucket);
+
+                if let Some(slot) = recent.iter().position(|&value| value == distance) {
+                    if slot == 0 {
+                        result.repeat0_matches += 1;
+                        result.repeat0_distance_bits += distance_bits;
+                    }
+                    result.repeat4_matches += 1;
+                    result.repeat4_distance_bits += distance_bits;
+                    recent.remove(slot);
+                } else if recent.len() == REPEAT_SLOTS {
+                    recent.pop();
+                }
+                recent.insert(0, distance);
+
+                for byte_position in position..position + length {
+                    profile_priced_byte(
+                        input,
+                        byte_position,
+                        false,
+                        &mut model,
+                        &mut suffix_table,
+                        &mut result,
+                    );
+                }
+                position += length;
+                excluded = position
+                    .checked_sub(distance)
+                    .and_then(|source| input.get(source))
+                    .copied();
+            }
+        }
+    }
+    debug_assert_eq!(position, input.len());
+    result
+}
+
+fn profile_priced_byte(
+    input: &[u8],
+    position: usize,
+    literal: bool,
+    model: &mut Match8Model,
+    suffix_table: &mut [Entry],
+    result: &mut LzPricedResidualProfile,
+) {
+    let byte = input[position];
+    let (low, high, total) = model.range(byte);
+    let baseline_bits = f64::from(total).log2() - f64::from(high - low).log2();
+    let mut candidate_bits = baseline_bits;
+
+    if let Some(suffix_start) = position.checked_sub(8) {
+        if let Some(key) = key_at(input, suffix_start) {
+            let entry = suffix_table[table_index(key)];
+            if entry.occupied && entry.key == key {
+                let latest = input[usize::try_from(entry.position).unwrap_or(0) + 8];
+                debug_assert_eq!(model.match_prediction(), Some(latest));
+                if entry.has_previous {
+                    let older = input[usize::try_from(entry.previous_position).unwrap_or(0) + 8];
+                    if literal && older != latest {
+                        result.two_source_disagreements += 1;
+                        result.latest_source_hits += usize::from(latest == byte);
+                        result.older_source_hits += usize::from(older == byte);
+                        let bonus = total / 5;
+                        if bonus != 0 {
+                            let width = high - low + u32::from(older == byte) * bonus;
+                            candidate_bits =
+                                f64::from(total + bonus).log2() - f64::from(width).log2();
+                        }
+                    }
+                }
+            }
+            model.update(byte);
+            insert(input, suffix_start, suffix_table);
+        } else {
+            model.update(byte);
+        }
+    } else {
+        model.update(byte);
+    }
+
+    if literal {
+        result.literal_model_bits += baseline_bits;
+        result.two_source_literal_bits += candidate_bits;
+    }
 }
 
 fn encode_lz_artifact_with_candidates(input: &[u8], candidates: usize) -> Vec<u8> {
@@ -1578,7 +1757,7 @@ mod tests {
     use super::{
         LzError, decode_lz_artifact, decode_lz_stream, encode_lz_artifact,
         encode_lz_priced_artifact, encode_lz_stream, encode_lz_two_candidate_artifact,
-        encode_lz_two_candidate_stream,
+        encode_lz_two_candidate_stream, profile_lz_priced_residual,
     };
     use crate::HEADER_LEN;
 
@@ -1672,6 +1851,15 @@ mod tests {
             let artifact = encode_lz_priced_artifact(input);
             assert_eq!(decode_lz_artifact(&artifact, 8).unwrap(), input);
         }
+    }
+
+    #[test]
+    fn priced_residual_profile_covers_input() {
+        let input = b"abcdefghXabcdefghYabcdefghZ".repeat(1_000);
+        let profile = profile_lz_priced_residual(&input);
+        assert_eq!(profile.literal_bytes + profile.match_bytes, input.len());
+        assert!(profile.distance_bits.is_finite());
+        assert!(profile.exclusion_saved_bits.is_finite());
     }
 
     #[test]
