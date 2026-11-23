@@ -1,0 +1,2 @@
+file	input_bytes	baseline_bytes	match8_bytes	baseline_encode_seconds	baseline_decode_seconds	match8_encode_seconds	match8_decode_seconds	roundtrip	wall_seconds	peak_rss_kib
+book1	768771	280587	268426	0.084895	0.147744	0.125674	0.189414	true	0.551719806	21720

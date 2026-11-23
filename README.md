@@ -132,6 +132,12 @@ process memory was 115,040 KiB, and every artifact round-tripped exactly. This
 is development evidence; controlled timing and independent validation remain
 required before an enwik9 run or tensor proposal.
 
+The unchanged RFC 0009 model subsequently passed Calgary validation. It was
+7.04% smaller than RFC 0006 in aggregate and 2.8% smaller than gzip under
+matching independent-file accounting. Median group decode ratios remained
+below 1.86x, peak process RSS was 21,720 KiB, and every decode was exact. A
+bounded streaming `TKM8` path is required before enwik9 measurement.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console

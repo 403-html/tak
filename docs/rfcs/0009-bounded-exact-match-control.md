@@ -1,6 +1,6 @@
 # RFC 0009: Bounded exact-match classical control
 
-- Status: Development gate accepted; validation required
+- Status: Independent validation accepted; research artifact only
 - Date: 2026-11-23
 - Scope: Classical research artifact only
 - TAK-C method identifier: None
@@ -122,3 +122,34 @@ This result validates a classical development control, not a stable codec.
 Run controlled timing repetitions and independent validation before promotion.
 Do not tune the table, hash, suffix, or bonus. Do not implement a tensor model
 from development evidence alone.
+
+## 10. Validation plan
+
+Validate the unchanged model on the Calgary corpus, compressed as independent
+files. Use the existing prose/reference, technical/source, and binary groups.
+This corpus did not select the RFC 0009 suffix, bonus, table, or hash.
+
+Validation passes only if `TKM8` is at least 2% smaller than strength-4 `TKN2`
+on two of three groups, is not larger in aggregate, stays below two times the
+baseline decode time in every group, uses less than one gigabyte peak process
+RSS, and restores every file exactly.
+
+Run one size-and-correctness screen first. If it passes, run one warm-up and
+five measured repetitions per file. Sum file times by group and repetition,
+then report group medians. Do not tune the fixed model on Calgary.
+
+## 11. Validation decision
+
+Accept independent Calgary validation. `TKM8` reduced complete size by 7.45%
+on prose/reference, 8.37% on technical/source, and 4.76% on binary data.
+Aggregate size fell from 1,107,385 to 1,029,480 bytes, a 7.04% reduction.
+
+After one warm-up and five measured repetitions per file, median group decode
+ratios were 1.25, 1.86, and 1.36 times the strength-4 baseline. The largest
+measured process used 21,720 KiB peak RSS. Every artifact restored its input.
+
+The classical mechanism now has development and held-out evidence. It remains
+research-only. Its speed is far below project targets, and enwik9 behavior is
+unmeasured. A future tensor RFC must still specify a concrete representation
+of match state and a reason it can beat this direct table. Rank alone is not a
+mechanism.

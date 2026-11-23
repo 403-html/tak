@@ -53,6 +53,14 @@ was 6.49 MiB/s encoding and 4.25 MiB/s decoding for `TKM8`, versus 6.64 and
 4.49 MiB/s for `TKN2`. These are single-sample development measurements, not
 publishable timing results.
 
+Controlled timing subsequently used one warm-up and five measured repetitions
+per development file. Raw rows are in
+`benchmarks/reports/raw/2026-11-23-match8-controlled.tsv`, SHA-256
+`088de132d19893c58fcb565c889071371be599472807003bf1f4015016787f2d`.
+Median match decode ratios were 1.25x on Dickens, 0.93x on Samba, 1.07x on XML,
+1.07x on Mozilla, and 1.17x on OOffice. Every measured run produced the same
+artifact sizes and restored the exact input.
+
 The direct-mapped table retains enough of the diagnostic benefit despite
 collisions. The measured complete-size reduction is smaller than the ideal
 RFC 0008 prediction, as expected, but it remains broad and substantial.
