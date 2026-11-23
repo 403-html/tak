@@ -140,7 +140,7 @@ bounded streaming `TKM8` path was required before enwik9 measurement.
 
 The byte-identical streaming path then produced a 315,578,766-byte enwik9
 artifact and restored all 1,000,000,000 bytes exactly. This achieves nominal
-M1 by 6,421,234 bytes and beats measured gzip by 7,013,222 bytes. It remains
+M1 by 6,421,234 bytes and **beats measured gzip by 7,013,222 bytes**. It remains
 80,249,827 bytes larger than Zstandard level 19 and 99,904,570 bytes larger
 than xz. Encoding reached 6.54 MiB/s and decoding 4.11 MiB/s with about 29 MiB
 peak RSS, so both compression ratio and speed remain major research targets.
