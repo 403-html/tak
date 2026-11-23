@@ -1,4 +1,4 @@
-# Calgary-validated artifact: price-based LZ parser
+# Calgary- and enwik9-validated artifact: price-based LZ parser
 
 ## Decision
 
@@ -9,8 +9,8 @@ a decoder-only follow-up decreased the cost of literals. It did not change any
 artifact byte. Two controlled runs then gave decode ratios of 1.053 and 1.050.
 Thus the decode limit now passes.
 
-RFC 0016 is the smallest measured TAK Calgary result. RFC 0015 stays the
-README profile, because there is no RFC 0016 enwik9 result.
+RFC 0016 is the smallest measured TAK result on Calgary and enwik9. It is the
+README profile.
 
 The parser changes only the choices of the encoder. The `TKLZ` syntax and the
 decoder do not change. Each artifact restores exactly through the existing
@@ -121,10 +121,16 @@ With the same independent-file Calgary accounting, RFC 0016 is:
 It removes 41.3% of the difference between RFC 0015 and xz on Calgary. To
 equal xz, it must remove 6.83% more of its bytes.
 
-There is no enwik9 result. A bounded encoder is now available, but the
-measurement host could not get the enwik9 file. Do not apply the Calgary
-decrease to enwik9. The enwik9 record is still RFC 0015 at 276,339,048 bytes.
-That is 60,664,852 bytes more than xz.
+The bounded enwik9 artifact is 251,978,489 bytes. It is 24,360,559 bytes, or
+8.82%, smaller than RFC 0015. It is 70,613,499 bytes smaller than gzip -9,
+16,649,550 bytes larger than Zstandard level 19, and 36,304,293 bytes larger
+than xz -9. It is 54,978,489 bytes above M2.
+
+Encoding took 542.910 seconds at 1.84 MB/s with 220,968 KiB peak RSS.
+Decoding took 111.675 seconds at 8.95 MB/s with 96,064 KiB peak RSS. The
+decoder restored all one billion bytes exactly. The input and restored
+SHA-256 values match. This is one screening run, so its throughput is not a
+publishable measurement.
 
 ## Bounded encoder screen
 
@@ -146,10 +152,10 @@ results show bounded memory. They are not publishable throughput results.
 
 ## Limitations and next experiment
 
-The next required step is one enwik9 measurement with the bounded encoder.
-Keep the 1.10 decode limit for that measurement. Do not tune the segment
-length, the nice length, the range of priced lengths, the literal start price,
-or the candidate rule on these results.
+Do not tune the segment length, the nice length, the range of priced lengths,
+the literal start price, or the candidate rule on these results. A new ratio
+experiment must identify a different mechanism and set its gate before
+measurement.
 
 This classical parser result does not permit tensor work.
 
@@ -165,6 +171,7 @@ This classical parser result does not permit tensor work.
 | `benchmarks/reports/raw/2026-11-23-lz-priced-blocks-calgary.tsv` | `16281a7c20872ba0ee0762cc3f4ef12611c3cb23c07ed051752a5acb33fa7c21` |
 | `benchmarks/reports/raw/2026-11-23-lz-priced-decoder-controlled.tsv` | `cab8b54f2b82b3863068ba3a3894f6b79759fbf39f7a68900ae47aeb72bc0639` |
 | `benchmarks/reports/raw/2026-11-23-lz-priced-bounded-mozilla.tsv` | `07b9fd18525e987bf9730ff96c302fa9975437003ea9a4fd6b7592150af3ff25` |
+| `benchmarks/reports/raw/2026-11-23-lz-priced-enwik9.tsv` | `1db4aba7454a1c37231efe8f1fa33f0be8ada6963affe69caedde0b974459694` |
 
 The input digests are equal to the digests in
 `benchmarks/reports/raw/2026-11-22-calgary-inputs.tsv` and
@@ -199,4 +206,5 @@ row ran through `benchmarks/runners/measure.py`.
 - Date: 2026-11-23 Europe/Warsaw.
 - Source: commit `c58cc95` plus the `encode-priced` stream mode. The decoder
   follow-up used commit `2f9cb71` plus the decoder changes. The bounded
-  encoder screen used commit `00268ea` plus the bounded encoder.
+  encoder screen used commit `00268ea` plus the bounded encoder. The enwik9
+  validation used commit `f66da7f`.
