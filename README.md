@@ -173,6 +173,13 @@ payload from 16,456 to 2,120 bytes. This is not a rank increase: it must beat
 the 24-cell and sparse suffix classical controls after quantized core metadata
 is counted before any tensor codec is implemented.
 
+That RFC 0013 tensor has now been rejected. Ranks 1, 2, 4, and 8 failed the
+full-precision gate on Dickens, XML, and OOffice, which makes the required
+three-of-five result unreachable. Rank 2 was the best dependency-capable model
+but still lost to the stronger classical control on every measured group.
+Quantization was accurate; representation quality and metadata were the
+failures. Higher ranks and more epochs are not justified by this experiment.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console

@@ -1,6 +1,6 @@
 # RFC 0013: Tensor-train match-reliability model
 
-- Status: Proposed
+- Status: Rejected
 - Date: 2026-11-23
 - Scope: Tensor research artifact only
 - TAK-C method identifier: None
@@ -100,6 +100,12 @@ time, less than one gigabyte peak RSS, and exact restoration.
 
 Use the first 90% of each established Silesia development partition for
 training and its final 10% for evaluation. Do not train on evaluation events.
+Rebuild the bounded match table from an empty state at the start of each
+partition. The evaluation partition MUST NOT inherit match entries, run state,
+or reliability counts from the training partition. The classical controls
+start from their specified unit pseudocounts and adapt only inside the
+evaluation partition.
+
 Select one rank across all groups. A passing rank requires later validation on
 a corpus not used for selection.
 
@@ -131,3 +137,27 @@ cannot represent.
 This RFC assigns no TAK-C method identifier. Any research artifact MUST bound
 rank, core count, core dimensions, contraction arithmetic, output length, and
 memory before decoding. Checksums detect accidental corruption only.
+
+## 10. Experiment and decision
+
+The screen used 100 deterministic full-batch exponentiated-gradient epochs.
+The initial learning rate was 1.0 and decreased by the square root of the
+epoch number. Distance values used a fixed deterministic spread. Run and byte
+transitions started near the identity so that eight recurrent byte steps did
+not erase distance and run state before training. Rank 1 was the required
+non-conditional negative control.
+
+No rank beat both classical controls on Dickens, XML, or OOffice. Rank 2 was
+the best dependency-capable rank on each group. Its full-precision losses were
+0.9448, 0.5508, and 0.3966 bits per event. The stronger classical control was
+0.8439, 0.4937, and 0.2857 bits per event, respectively.
+
+Three groups fail. At most the two untested groups could pass, so the required
+three-of-five gate is unreachable. Stop without running Samba or Mozilla.
+Quantization and integer contraction caused negligible additional loss, but
+metadata made every measured candidate substantially worse.
+
+Reject this shared-transition tensor. Do not implement a compression artifact.
+Do not test higher ranks or more epochs as a new tensor attempt. A later RFC
+must identify a different dependency or a measured representation limitation;
+optimizer tuning alone does not reopen this RFC.
