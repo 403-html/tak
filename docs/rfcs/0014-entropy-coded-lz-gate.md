@@ -1,6 +1,6 @@
 # RFC 0014: Entropy-coded LZ opportunity gate
 
-- Status: Diagnostic accepted; artifact permitted
+- Status: Development artifact accepted
 - Date: 2026-11-23
 - Scope: Classical research diagnostic only
 - Format change: None
@@ -95,3 +95,73 @@ development gate and remains positive on Calgary. The artifact MUST beat RFC
 exactly, stay below two times RFC 0009 decode time, and use less than one
 gigabyte peak RSS. Reject it if any condition fails. Do not change parser
 parameters or claim that this opportunity can beat xz before measurement.
+
+## 8. Experimental artifact format
+
+The complete artifact uses the four-byte magic `TKLZ`. It has no TAK-C method
+identifier. All multibyte integers use little-endian byte order.
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 4 | Magic `TKLZ` |
+| 4 | 4 | Version and flags, all zero |
+| 8 | 8 | Restored byte length |
+| 16 | 8 | Payload byte length |
+| 24 | 4 | CRC-32 of all restored bytes |
+| 28 | variable | Arithmetic-coded payload |
+
+The payload uses one 32-bit arithmetic-coder state. It interleaves block type,
+bucket, remainder-bit, and literal-byte ranges. Adaptive metadata counts start
+at one and halve with upward rounding when their total reaches 16,384. Literal
+bytes use the exact RFC 0009 model. Encoder and decoder update that model with
+every literal byte and reconstructed match byte.
+
+Payload bits use most-significant-bit-first order within each byte. Initialize
+`low` to 0, `high` to `0xffffffff`, and `code` from the first 32 payload bits.
+Treat absent bits after the payload extent as zero. For a distribution total
+`T`, calculate:
+
+```text
+width  = high - low + 1
+scaled = floor(((code - low + 1) * T - 1) / width)
+```
+
+Select the symbol whose cumulative interval is `[C_low, C_high)`. Update:
+
+```text
+high = low + floor(width * C_high / T) - 1
+low  = low + floor(width * C_low  / T)
+```
+
+Renormalize while `high < 0x80000000`, `low >= 0x80000000`, or
+`low >= 0x40000000 && high < 0xc0000000`. Subtract the applicable half or
+quarter offset, shift `low` and `high` left, set the new low bit of `high`, and
+shift one payload bit into `code`. All state arithmetic is unsigned 64-bit
+arithmetic bounded to the 32-bit coding interval.
+
+Bucket remainder bits use uniform binary ranges and most-significant-bit-first
+order. Metadata symbols use increasing numeric order. CRC-32 uses reflected
+polynomial `0xedb88320`, initial state `0xffffffff`, and final complement.
+
+The decoder reads blocks until the end symbol. A literal length is the decoded
+bucket value plus one. A match length is the decoded value plus eight. A match
+distance is the decoded value plus one. The decoder copies overlapping matches
+one byte at a time from `output_length - distance`.
+
+The decoder MUST reject a nonzero version or flag, inconsistent payload extent,
+declared output above the caller limit, arithmetic failure, bucket above 31,
+match longer than 65,535 bytes, distance above 67,108,864 bytes, distance beyond
+the restored prefix, block beyond the declared output, premature end symbol,
+or checksum mismatch. CRC-32 detects accidental corruption only.
+
+## 9. Artifact result
+
+The fixed artifact produced 1,004,678 bytes across Calgary, compared with
+1,029,480 for RFC 0009. It saves 24,802 bytes, or 2.41%, and passes the 1% size
+gate. All 18 files restored exactly. Single-sample aggregate decode time was
+0.56 times RFC 0009 and peak process RSS was 36,756 KiB.
+
+The artifact remains 83,605 bytes larger than Zstandard-19 and 118,818 bytes
+larger than xz. RFC 0010 is also 3,983 bytes smaller. Retain RFC 0014 as a
+research component, not the best-ratio profile. Controlled timing and a
+bounded streaming implementation are required before enwik9 evaluation.

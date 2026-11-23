@@ -187,6 +187,13 @@ saved only about 23,860 ideal bytes, far below the 143,620-byte RFC 0009-to-xz
 gap. One complete artifact is permitted to test whether this modest margin
 survives integer coding; no xz or M2 claim follows from the diagnostic.
 
+The complete RFC 0014 `TKLZ` artifact then saved 24,802 bytes, or 2.41%, over
+RFC 0009 on Calgary and restored all 18 files exactly. Screening decode time
+was 0.56x the RFC 0009 time with 36,756 KiB peak RSS. It remains 3,983 bytes
+larger than retained RFC 0010, 83,605 bytes above Zstandard-19, and 118,818
+bytes above xz. Keep it as a fast classical research component, not a new
+compression-ratio record.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console

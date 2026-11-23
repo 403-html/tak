@@ -2,6 +2,7 @@
 //!
 //! Artifacts use `TKRX`, not TAK-C. This crate makes no compression claim.
 
+mod lz;
 mod match8;
 mod match8_strong;
 mod order2_normalized;
@@ -10,6 +11,7 @@ mod second_order;
 mod third_order;
 mod third_order_backoff;
 
+pub use lz::{LzError, decode_lz_artifact, encode_lz_artifact};
 pub use match8::{
     decode_match8_artifact, decode_match8_stream, encode_match8_artifact, encode_match8_stream,
 };

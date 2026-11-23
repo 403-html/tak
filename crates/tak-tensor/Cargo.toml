@@ -67,6 +67,10 @@ path = "src/match_reliability_tensor_main.rs"
 name = "tak-lz-opportunity"
 path = "src/lz_opportunity_main.rs"
 
+[[bin]]
+name = "tak-lz-gate"
+path = "src/lz_main.rs"
+
 [dependencies]
 tak-codecs = { path = "../tak-codecs" }
 tak-context = { path = "../tak-context" }
