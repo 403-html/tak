@@ -7,6 +7,11 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::num::{NonZeroU16, NonZeroU32};
 
 const ALPHABET_SIZE: usize = 256;
+const GROUP_SIZE: usize = 16;
+/// Initial group sum of a dense distribution with unit frequencies.
+const UNIT_GROUP_SUM: u16 = 16;
+const _: () = assert!(UNIT_GROUP_SUM as usize == GROUP_SIZE);
+const GROUP_COUNT: usize = ALPHABET_SIZE / GROUP_SIZE;
 const MAX_TOTAL: u32 = 16_384;
 const START_CONTEXT: usize = 256;
 const ORDER2_SINGLE_BASE: usize = 65_536;
@@ -54,9 +59,37 @@ pub trait ByteModel {
     fn total(&self) -> u32;
 }
 
+/// Sums of each group of `GROUP_SIZE` consecutive symbol frequencies.
+///
+/// Group sums only accelerate cumulative-frequency search. They never change
+/// a coded range.
+fn group_sums<const N: usize>(frequencies: &[u16; N]) -> [u16; GROUP_COUNT] {
+    let mut groups = [0_u16; GROUP_COUNT];
+    for (group, chunk) in groups.iter_mut().zip(frequencies.chunks_exact(GROUP_SIZE)) {
+        *group = chunk.iter().sum();
+    }
+    groups
+}
+
+/// Returns the cumulative frequency below `index` using group sums.
+fn prefix_sum(
+    frequencies: &[u16; ALPHABET_SIZE],
+    groups: &[u16; GROUP_COUNT],
+    index: usize,
+) -> u32 {
+    let group = index / GROUP_SIZE;
+    let full: u32 = groups[..group].iter().map(|&sum| u32::from(sum)).sum();
+    let partial: u32 = frequencies[group * GROUP_SIZE..index]
+        .iter()
+        .map(|&frequency| u32::from(frequency))
+        .sum();
+    full + partial
+}
+
 #[derive(Clone)]
 struct Distribution {
     frequencies: [u16; ALPHABET_SIZE],
+    groups: [u16; GROUP_COUNT],
     total: u32,
 }
 
@@ -64,16 +97,14 @@ impl Distribution {
     fn new() -> Self {
         Self {
             frequencies: [1; ALPHABET_SIZE],
+            groups: [UNIT_GROUP_SUM; GROUP_COUNT],
             total: 256,
         }
     }
 
     fn range(&self, symbol: u8) -> (u32, u32, u32) {
         let index = usize::from(symbol);
-        let low = self.frequencies[..index]
-            .iter()
-            .map(|&frequency| u32::from(frequency))
-            .sum();
+        let low = prefix_sum(&self.frequencies, &self.groups, index);
         let high = low + u32::from(self.frequencies[index]);
         (low, high, self.total)
     }
@@ -81,17 +112,28 @@ impl Distribution {
     fn symbol(&self, value: u32) -> (u8, u32, u32, u32) {
         debug_assert!(value < self.total);
         let mut low = 0;
-        for (symbol, &frequency) in self.frequencies.iter().enumerate() {
-            let high = low + u32::from(frequency);
-            if value < high {
-                return (
-                    u8::try_from(symbol).expect("distribution has 256 symbols"),
-                    low,
-                    high,
-                    self.total,
-                );
+        for (group, &sum) in self.groups.iter().enumerate() {
+            let group_high = low + u32::from(sum);
+            if value >= group_high {
+                low = group_high;
+                continue;
             }
-            low = high;
+            let start = group * GROUP_SIZE;
+            for (offset, &frequency) in self.frequencies[start..start + GROUP_SIZE]
+                .iter()
+                .enumerate()
+            {
+                let high = low + u32::from(frequency);
+                if value < high {
+                    return (
+                        u8::try_from(start + offset).expect("distribution has 256 symbols"),
+                        low,
+                        high,
+                        self.total,
+                    );
+                }
+                low = high;
+            }
         }
         unreachable!("value is below the distribution total")
     }
@@ -103,8 +145,11 @@ impl Distribution {
                 *frequency = (*frequency).div_ceil(2);
                 self.total += u32::from(*frequency);
             }
+            self.groups = group_sums(&self.frequencies);
         }
-        self.frequencies[usize::from(symbol)] += 1;
+        let index = usize::from(symbol);
+        self.frequencies[index] += 1;
+        self.groups[index / GROUP_SIZE] += 1;
         self.total += 1;
     }
 }
@@ -343,6 +388,7 @@ impl ByteModel for Match8Model {
 #[derive(Clone)]
 struct LocalIncrements {
     frequencies: [u16; ALPHABET_SIZE],
+    groups: [u16; GROUP_COUNT],
     total: u32,
 }
 
@@ -350,16 +396,14 @@ impl LocalIncrements {
     fn new() -> Self {
         Self {
             frequencies: [0; ALPHABET_SIZE],
+            groups: [0; GROUP_COUNT],
             total: 0,
         }
     }
 
     fn extra_range(&self, symbol: u8) -> (u32, u32) {
         let index = usize::from(symbol);
-        let low = self.frequencies[..index]
-            .iter()
-            .map(|&frequency| u32::from(frequency))
-            .sum();
+        let low = prefix_sum(&self.frequencies, &self.groups, index);
         (low, u32::from(self.frequencies[index]))
     }
 
@@ -370,8 +414,11 @@ impl LocalIncrements {
                 *frequency /= 2;
                 self.total += u32::from(*frequency);
             }
+            self.groups = group_sums(&self.frequencies);
         }
-        self.frequencies[usize::from(symbol)] += 1;
+        let index = usize::from(symbol);
+        self.frequencies[index] += 1;
+        self.groups[index / GROUP_SIZE] += 1;
         self.total += 1;
     }
 }
@@ -647,14 +694,24 @@ impl ByteModel for Order2NormalizedModel {
         let parent_total = parent.total;
         let total = (local.total + strength) * parent_total;
         let mut low = 0;
-        for symbol in 0_u8..=255 {
-            let frequency = u32::from(local.frequencies[usize::from(symbol)]) * parent_total
-                + strength * u32::from(parent.frequencies[usize::from(symbol)]);
-            let high = low + frequency;
-            if value < high {
-                return (symbol, low, high, total);
+        for group in 0..GROUP_COUNT {
+            let group_high = low
+                + u32::from(local.groups[group]) * parent_total
+                + strength * u32::from(parent.groups[group]);
+            if value >= group_high {
+                low = group_high;
+                continue;
             }
-            low = high;
+            for index in group * GROUP_SIZE..(group + 1) * GROUP_SIZE {
+                let frequency = u32::from(local.frequencies[index]) * parent_total
+                    + strength * u32::from(parent.frequencies[index]);
+                let high = low + frequency;
+                if value < high {
+                    let symbol = u8::try_from(index).expect("distribution has 256 symbols");
+                    return (symbol, low, high, total);
+                }
+                low = high;
+            }
         }
         unreachable!("value is below the normalized distribution total")
     }

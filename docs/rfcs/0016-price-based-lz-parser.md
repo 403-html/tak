@@ -1,6 +1,6 @@
 # RFC 0016: Price-based LZ parser gate
 
-- Status: Calgary size validated; decode-time condition failed
+- Status: Calgary validated after decoder speed-up; enwik9 unmeasured
 - Date: 2026-11-23
 - Scope: Classical encoder parser only
 - Format change: None
@@ -188,3 +188,48 @@ Controlled Calgary rows are in
 Calgary block counts are in
 `benchmarks/reports/raw/2026-11-23-lz-priced-blocks-calgary.tsv`, SHA-256
 `16281a7c20872ba0ee0762cc3f4ef12611c3cb23c07ed051752a5acb33fa7c21`.
+
+## 10. Decoder literal-cost follow-up
+
+Section 9 permitted a follow-up that reduces decoder literal cost while the
+1.10 bound stays fixed. The follow-up changes decoder implementation only. It
+does not change the `TKLZ` syntax, the arithmetic, the model, or any artifact
+byte. Both RFC 0015 and RFC 0016 artifacts are byte-identical before and after
+the change, and the Calgary sizes in Section 8 are unchanged.
+
+Instruction profiles of the bounded decoder showed that literal decoding was
+dominated by the byte-model symbol search, range-coder renormalization, and
+single-byte payload reads. Three changes address them:
+
+1. Dense byte distributions and normalized order-2 increments keep sums of
+   each 16-symbol group. Cumulative search scans group sums before symbols.
+   The sums are updated with every frequency change and recomputed after
+   halving.
+2. The bounded bit reader owns a 64 KiB buffer and serves bits from a 64-bit
+   register instead of reading one byte through `BufReader` per eight bits.
+3. Renormalization applies all half-interval steps, then all quarter steps,
+   with leading-bit counts. Equal leading bits of `low` and `high` give the
+   half steps. After those steps the leading bits differ, so a half step
+   cannot follow a quarter step. One quarter step equals a one-bit left shift
+   followed by inverting bit 31. A randomized test compares the result with
+   the single-bit loop on 20,000 states.
+
+The same controlled Calgary procedure as Section 8 was repeated with the
+complete change. Median decode time is 0.694 seconds for RFC 0016 and 0.659
+seconds for RFC 0015, a ratio of 1.053. A second complete repetition of the
+procedure gives 1.050. Both pass the 1.10 bound. Median encode ratios are 1.17
+and 1.18. Peak process RSS is 56,180 KiB. Every decode is exact.
+
+An intermediate measurement after only the first two changes gave a decode
+ratio of 1.124. Those changes also accelerated work shared by literals and
+matches, so the ratio rose even though both decoders became faster. That row is
+kept in the raw file.
+
+RFC 0016 now passes every Section 4 validation condition. It is the smallest
+measured TAK Calgary result. It is not the README profile, because its enwik9
+result is unmeasured. A bounded priced encoder and one enwik9 measurement are
+the next required step.
+
+Controlled decoder rows are in
+`benchmarks/reports/raw/2026-11-23-lz-priced-decoder-controlled.tsv`, SHA-256
+`cab8b54f2b82b3863068ba3a3894f6b79759fbf39f7a68900ae47aeb72bc0639`.

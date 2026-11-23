@@ -1,12 +1,16 @@
-# Calgary-validated size, failed decode bound: price-based LZ parser
+# Calgary-validated artifact: price-based LZ parser
 
 ## Decision
 
 RFC 0016 passes its size gate on Silesia development data and on frozen
-Calgary validation. It misses the pre-registered decode-time bound by 0.002:
-the controlled median decode ratio is 1.102, and the bound was 1.10. Do not
-promote it to the best-ratio profile. Do not relax the bound on this
-measurement. RFC 0015 remains the README profile.
+Calgary validation. The first controlled timing missed the pre-registered
+decode bound: the median decode ratio was 1.102 against a bound of 1.10. A
+decoder-only follow-up then reduced literal cost without changing any artifact
+byte. Two repeated controlled runs gave decode ratios of 1.053 and 1.050, so
+the bound now passes.
+
+RFC 0016 is the smallest measured TAK Calgary result. RFC 0015 remains the
+README profile because the RFC 0016 enwik9 result is unmeasured.
 
 The parser changes only encoder choices. The `TKLZ` syntax and decoder are
 unchanged, and every artifact restores exactly through the existing decoder.
@@ -73,6 +77,30 @@ arithmetic-coded byte-model step in the decoder. This explains the direction of
 the decode-time change. The block counts come from a separate instrumented run
 that counted the blocks passed to the encoder. That run was not timed.
 
+## Decoder follow-up
+
+The follow-up keeps the 1.10 bound and changes decoder implementation only.
+It adds 16-symbol group sums to dense byte distributions and normalized
+order-2 increments, serves payload bits from a buffered 64-bit register, and
+applies range-coder renormalization in two bulk steps. A randomized test checks
+the bulk renormalization against the single-bit loop on 20,000 states.
+
+| Decoder | RFC 0015 median decode | RFC 0016 median decode | Ratio |
+|---|---:|---:|---:|
+| Original | 0.820 s | 0.903 s | 1.102 |
+| Group sums and buffered reader only | 0.646 s | 0.727 s | 1.124 |
+| Complete follow-up | 0.659 s | 0.694 s | 1.053 |
+| Complete follow-up, repeated | 0.660 s | 0.694 s | 1.050 |
+
+The intermediate row rose because those two changes also sped up work shared by
+literals and matches. Each row uses one warm-up and five measured aggregate
+repetitions over all 18 files. Artifact sizes are unchanged: 996,359 bytes for
+RFC 0015 and 950,768 for RFC 0016. Every decode is exact. Peak process RSS is
+56,212 KiB or less. Median encode ratios in these runs are 1.17 to 1.18.
+
+The complete follow-up also makes RFC 0016 decode about 15% faster than the
+original decoder took on RFC 0015.
+
 ## Competitive position
 
 On the same independent-file Calgary accounting, RFC 0016 is:
@@ -92,15 +120,8 @@ RFC 0015 at 276,339,048 bytes, 60,664,852 bytes above xz.
 
 ## Limitations and next experiment
 
-The size mechanism is strong, but the decode bound failed. One follow-up must
-choose before measuring:
-
-1. State a new decode-time budget in a new RFC, then build a bounded priced
-   encoder and measure enwik9 once.
-2. Reduce decoder literal cost without changing the size result, then repeat
-   the controlled Calgary timing.
-
-Do not tune segment length, nice length, priced length range, literal start
+The next required step is a bounded priced encoder and one enwik9 measurement.
+Keep the 1.10 decode bound for that measurement. Do not tune segment length, nice length, priced length range, literal start
 price, or the candidate rule on these results.
 
 This classical parser result does not authorize tensor work.
@@ -115,6 +136,7 @@ This classical parser result does not authorize tensor work.
 | `benchmarks/reports/raw/2026-11-23-lz-priced-calgary.tsv` | `bf9ae772150319a2156f0f72e7b74d798bf3d5f3e5a388366f936f9a2d1063f7` |
 | `benchmarks/reports/raw/2026-11-23-lz-priced-controlled.tsv` | `48ea8d9845689c424fac7f2e710f82cf898bfd1dd48b7ce147ab787f88b23d49` |
 | `benchmarks/reports/raw/2026-11-23-lz-priced-blocks-calgary.tsv` | `16281a7c20872ba0ee0762cc3f4ef12611c3cb23c07ed051752a5acb33fa7c21` |
+| `benchmarks/reports/raw/2026-11-23-lz-priced-decoder-controlled.tsv` | `cab8b54f2b82b3863068ba3a3894f6b79759fbf39f7a68900ae47aeb72bc0639` |
 
 Input digests match `benchmarks/reports/raw/2026-11-22-calgary-inputs.tsv` and
 `benchmarks/reports/raw/2026-11-23-match-dependency-inputs.tsv`. The gate and
@@ -145,4 +167,5 @@ run through `benchmarks/runners/measure.py`.
 - Threads: one.
 - Memory limit: none imposed.
 - Date: 2026-11-23 Europe/Warsaw.
-- Source: commit `c58cc95` plus the `encode-priced` stream mode.
+- Source: commit `c58cc95` plus the `encode-priced` stream mode. The decoder
+  follow-up was measured on commit `2f9cb71` plus the decoder changes.

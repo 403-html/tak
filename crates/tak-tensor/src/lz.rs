@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 
 use tak_context::{ByteModel, Match8Model};
 
@@ -1349,22 +1349,32 @@ impl<R: Read> StreamRangeDecoder<R> {
         let width = self.high - self.low + 1;
         self.high = self.low + width * u64::from(cumulative_high) / u64::from(total) - 1;
         self.low += width * u64::from(cumulative_low) / u64::from(total);
-        loop {
-            if self.high < HALF {
-            } else if self.low >= HALF {
-                self.low -= HALF;
-                self.high -= HALF;
-                self.code -= HALF;
-            } else if self.low >= QUARTER && self.high < THREE_QUARTERS {
-                self.low -= QUARTER;
-                self.high -= QUARTER;
-                self.code -= QUARTER;
-            } else {
-                break;
-            }
-            self.low <<= 1;
-            self.high = (self.high << 1) | 1;
-            self.code = ((self.code << 1) & RANGE_MAX) | u64::from(self.reader.bit()?);
+        self.renormalize()?;
+        Ok(())
+    }
+
+    /// Applies every pending RFC 0014 renormalization step at once.
+    ///
+    /// Equal leading bits of `low` and `high` are the half-interval steps.
+    /// After them the leading bits differ, so only quarter steps can follow.
+    /// A quarter step equals a one-bit shift followed by inverting bit 31.
+    /// The result is identical to applying the single-bit steps in order.
+    #[inline]
+    fn renormalize(&mut self) -> Result<(), LzStreamError> {
+        let matching = (self.low ^ self.high).leading_zeros() - 32;
+        if matching != 0 {
+            let fill = (1_u64 << matching) - 1;
+            self.low = (self.low << matching) & RANGE_MAX;
+            self.high = ((self.high << matching) | fill) & RANGE_MAX;
+            self.code = ((self.code << matching) & RANGE_MAX) | self.reader.bits(matching)?;
+        }
+        let straddle = ((self.low & !self.high) << 1) & RANGE_MAX;
+        let quarter = (straddle << 32).leading_ones();
+        if quarter != 0 {
+            let fill = (1_u64 << quarter) - 1;
+            self.low = ((self.low << quarter) & RANGE_MAX) ^ HALF;
+            self.high = (((self.high << quarter) | fill) & RANGE_MAX) ^ HALF;
+            self.code = (((self.code << quarter) & RANGE_MAX) | self.reader.bits(quarter)?) ^ HALF;
         }
         Ok(())
     }
@@ -1377,40 +1387,88 @@ impl<R: Read> StreamRangeDecoder<R> {
 }
 
 struct StreamBitReader<R> {
-    input: BufReader<R>,
-    current: u8,
-    remaining: u8,
+    input: R,
+    buffer: Box<[u8]>,
+    position: usize,
+    filled: usize,
+    current: u64,
+    remaining: u32,
 }
 
 impl<R: Read> StreamBitReader<R> {
     fn new(input: R) -> Self {
         Self {
-            input: BufReader::with_capacity(64 * 1024, input),
+            input,
+            buffer: vec![0; 64 * 1024].into_boxed_slice(),
+            position: 0,
+            filled: 0,
             current: 0,
             remaining: 0,
         }
     }
 
-    fn bit(&mut self) -> io::Result<u8> {
-        if self.remaining == 0 {
-            let mut byte = [0_u8; 1];
-            loop {
-                match self.input.read(&mut byte) {
-                    Ok(0) => {
-                        self.current = 0;
-                        break;
-                    }
-                    Ok(_) => {
-                        self.current = byte[0];
-                        break;
-                    }
+    /// Loads up to eight payload bytes, most significant first. Bytes after
+    /// the end of input read as zero.
+    fn refill(&mut self) -> io::Result<()> {
+        if self.filled - self.position >= 8 {
+            let bytes: [u8; 8] = self.buffer[self.position..self.position + 8]
+                .try_into()
+                .expect("slice has eight bytes");
+            self.position += 8;
+            self.current = u64::from_be_bytes(bytes);
+            self.remaining = 64;
+            return Ok(());
+        }
+        let byte = self.next_byte()?;
+        self.current = u64::from(byte) << 56;
+        self.remaining = 8;
+        Ok(())
+    }
+
+    /// Returns the next payload byte, or zero after the end of input.
+    fn next_byte(&mut self) -> io::Result<u8> {
+        if self.position == self.filled {
+            self.position = 0;
+            self.filled = loop {
+                match self.input.read(&mut self.buffer) {
+                    Ok(count) => break count,
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(error) => return Err(error),
                 }
+            };
+            if self.filled == 0 {
+                return Ok(0);
             }
-            self.remaining = 8;
         }
-        let bit = (self.current >> (self.remaining - 1)) & 1;
+        let byte = self.buffer[self.position];
+        self.position += 1;
+        Ok(byte)
+    }
+
+    /// Returns the next `count` payload bits, most significant first.
+    #[inline]
+    fn bits(&mut self, count: u32) -> io::Result<u64> {
+        debug_assert!(count <= 32);
+        if count <= self.remaining {
+            let value = self.current.checked_shr(64 - count).unwrap_or(0);
+            self.current = self.current.checked_shl(count).unwrap_or(0);
+            self.remaining -= count;
+            return Ok(value);
+        }
+        let mut value = 0;
+        for _ in 0..count {
+            value = (value << 1) | u64::from(self.bit()?);
+        }
+        Ok(value)
+    }
+
+    #[inline]
+    fn bit(&mut self) -> io::Result<u8> {
+        if self.remaining == 0 {
+            self.refill()?;
+        }
+        let bit = u8::try_from(self.current >> 63).expect("one bit fits u8");
+        self.current <<= 1;
         self.remaining -= 1;
         Ok(bit)
     }
@@ -1518,6 +1576,75 @@ mod tests {
         encode_lz_two_candidate_stream,
     };
     use crate::HEADER_LEN;
+
+    #[test]
+    fn bulk_renormalization_matches_single_bit_steps() {
+        use super::{
+            HALF, QUARTER, RANGE_MAX, StreamBitReader, StreamRangeDecoder, THREE_QUARTERS,
+        };
+
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let payload: Vec<u8> = (0..4_096).map(|_| next().to_le_bytes()[0]).collect();
+        for case in 0..20_000 {
+            let mut a = next() & RANGE_MAX;
+            let mut b = next() & RANGE_MAX;
+            if case % 3 == 0 {
+                // Force long runs of shared leading bits and quarter steps.
+                let shift = next() % 32;
+                b = (a & !((1 << shift) - 1)) | (b & ((1 << shift) - 1));
+                if case % 2 == 0 {
+                    a = (a & !THREE_QUARTERS) | QUARTER;
+                    b = (b & !THREE_QUARTERS) | HALF;
+                }
+            }
+            let (low, high) = if a <= b { (a, b) } else { (b, a) };
+            let code = low + next() % (high - low + 1);
+            let offset = usize::try_from(next() % 4_000).unwrap();
+            let mut bulk = StreamRangeDecoder {
+                reader: StreamBitReader::new(Cursor::new(&payload[offset..])),
+                low,
+                high,
+                code,
+            };
+            bulk.renormalize().unwrap();
+
+            let mut reader = StreamBitReader::new(Cursor::new(&payload[offset..]));
+            let (mut low, mut high, mut code) = (low, high, code);
+            loop {
+                if high < HALF {
+                } else if low >= HALF {
+                    low -= HALF;
+                    high -= HALF;
+                    code -= HALF;
+                } else if low >= QUARTER && high < THREE_QUARTERS {
+                    low -= QUARTER;
+                    high -= QUARTER;
+                    code -= QUARTER;
+                } else {
+                    break;
+                }
+                low <<= 1;
+                high = (high << 1) | 1;
+                code = ((code << 1) & RANGE_MAX) | u64::from(reader.bit().unwrap());
+            }
+            assert_eq!(
+                (bulk.low, bulk.high, bulk.code),
+                (low, high, code),
+                "case {case}"
+            );
+            assert_eq!(
+                bulk.reader.bit().unwrap(),
+                reader.bit().unwrap(),
+                "case {case}"
+            );
+        }
+    }
 
     #[test]
     fn priced_artifact_round_trips_through_existing_decoders() {
