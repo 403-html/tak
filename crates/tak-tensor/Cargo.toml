@@ -55,6 +55,10 @@ path = "src/match8_strong_main.rs"
 name = "tak-match-run-diagnostic"
 path = "src/match_run_main.rs"
 
+[[bin]]
+name = "tak-match-reliability"
+path = "src/match_reliability_main.rs"
+
 [dependencies]
 tak-codecs = { path = "../tak-codecs" }
 tak-context = { path = "../tak-context" }

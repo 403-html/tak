@@ -163,6 +163,14 @@ saved only 131,959 gross bits before control costs, far below the xz gap. The
 raw-token design is rejected; future work requires entropy-coded tokens or a
 genuine LZ parser rather than more match-weight tuning.
 
+RFC 0012 then identified the first tensor-specific opportunity since the
+rejected bigram work. Match reliability depends on distance and correct-run
+state, and exact 8-byte suffix identity adds another 0.0785 bits per matched
+event in weighted development log loss. RFC 0013 proposes a new eleven-core
+tensor train over those explicit modes. It is not a rank increase: it must beat
+the 24-cell and sparse suffix classical controls after quantized core metadata
+is counted before any tensor codec is implemented.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console
