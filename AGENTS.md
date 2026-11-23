@@ -85,6 +85,10 @@ proportion to each change. Cross-platform behavior must remain covered by CI.
   same-dataset measurements when possible. If an enwik9 milestone has not been
   measured, say that it is unmeasured and do not extrapolate from another
   corpus.
+- When an accepted complete artifact becomes the best measured TAK result,
+  update the README benchmark table, performance line, result link, and exact
+  distance-to-goal figures in the same change. Do not leave the README pointing
+  to a superseded profile.
 
 Follow `benchmarks/methodology/phase-1.md` for controlled comparisons.
 
