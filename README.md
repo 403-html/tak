@@ -167,7 +167,9 @@ RFC 0012 then identified the first tensor-specific opportunity since the
 rejected bigram work. Match reliability depends on distance and correct-run
 state, and exact 8-byte suffix identity adds another 0.0785 bits per matched
 event in weighted development log loss. RFC 0013 proposes a new eleven-core
-tensor train over those explicit modes. It is not a rank increase: it must beat
+tensor train over those explicit modes. One shared MPS transition processes
+the eight ordered suffix bytes, cutting the smallest dependency-capable core
+payload from 16,456 to 2,120 bytes. This is not a rank increase: it must beat
 the 24-cell and sparse suffix classical controls after quantized core metadata
 is counted before any tensor codec is implemented.
 

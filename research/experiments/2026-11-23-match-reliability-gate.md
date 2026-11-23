@@ -53,6 +53,16 @@ Proceed only with RFC 0013's match-state tensor. Do not revive the rejected
 bigram tensor or increase its rank. The new tensor must beat the 24-cell and
 sparse suffix controls after core metadata and integer contraction are counted.
 
+An initial metadata pre-screen rejected eight separately serialized suffix
+cores before training. At rank 2, that layout costs 16,456 bytes. It exceeds
+the measured sparse-suffix saving on four of five groups. RFC 0013 now uses
+one shared suffix transition applied eight times. Its rank-2 payload is 2,120
+bytes. This is an architecture correction, not a compression result.
+
+The rank table is in
+`benchmarks/reports/raw/2026-11-23-tensor-metadata-feasibility.tsv`, SHA-256
+`452d832d13339959feb43019c6e56f1c48ab6426f3b8d083b3248fdb8356324d`.
+
 The current measured enwik9 control remains 315,578,766 bytes. M1 is achieved;
 M2 remains 118,578,766 bytes away and requires a 37.57% reduction.
 

@@ -1,0 +1,5 @@
+rank	untied_core_bytes	shared_core_bytes	conditional_candidate
+1	4120	536	false
+2	16456	2120	true
+4	65776	8432	true
+8	263008	33632	true

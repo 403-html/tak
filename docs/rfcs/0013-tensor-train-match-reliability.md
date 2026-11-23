@@ -35,17 +35,27 @@ RFC identifies a new mechanism rather than additional capacity.
 
 ## 3. Representation
 
-Use eleven nonnegative unsigned-16-bit cores in the mode order above. Boundary
-ranks are one. Internal ranks equal the selected symmetric rank.
+Apply eleven logical cores in the mode order above. Serialize four
+nonnegative unsigned-16-bit tensors: one distance core, one run core, one
+shared suffix-byte core, and one outcome core. Apply the shared byte core once
+for each of the eight suffix bytes. This is a recurrent MPS transition. The
+hidden state therefore depends on byte order without eight independent byte
+core payloads.
+
+Boundary ranks are one. Internal ranks equal the selected symmetric rank. A
+rank-1 model cannot condition the outcome on any input mode because every
+input factor cancels when the two outcome scores are normalized. Retain rank
+1 only as a negative control.
 
 The parameter count is:
 
 ```text
-6*r + 2054*r*r unsigned 16-bit values
+6*r + 262*r*r unsigned 16-bit values
 ```
 
-Complete core sizes are 4,120 bytes at rank 1, 16,456 at rank 2, 65,776 at
-rank 4, and 263,008 at rank 8. Count every byte in the artifact.
+Complete core sizes are 536 bytes at rank 1, 2,120 at rank 2, 8,432 at rank 4,
+and 33,632 at rank 8. Count every byte in the artifact. The artifact MUST
+serialize the shared byte core once.
 
 ## 4. Deterministic contraction
 
@@ -102,7 +112,21 @@ the gain. Do not implement a codec from log loss alone.
 Preserve all failed ranks. Do not claim that this design approaches M2 before
 a complete enwik9 artifact is measured.
 
-## 8. Compatibility and security
+## 8. Metadata pre-screen
+
+The first draft assigned an independent core to each suffix position. Its
+smallest dependency-capable model required 16,456 bytes at rank 2. That cost
+was larger than the observed sparse-suffix saving on Dickens, Samba, XML, and
+OOffice. Only Mozilla saved more than the untied rank-2 core cost.
+
+This does not prove that an untied model cannot win because a tensor can beat
+the sparse suffix control. It does show that separate byte cores spend
+metadata before positional specialization is demonstrated. Use the shared
+transition first. A later RFC may untie byte positions only after a controlled
+residual test shows a position-specific dependency that the shared transition
+cannot represent.
+
+## 9. Compatibility and security
 
 This RFC assigns no TAK-C method identifier. Any research artifact MUST bound
 rank, core count, core dimensions, contraction arithmetic, output length, and
