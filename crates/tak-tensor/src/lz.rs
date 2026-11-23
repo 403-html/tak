@@ -5,6 +5,8 @@ use tak_context::{ByteModel, Match8Model};
 
 use crate::{HEADER_LEN, crc32, read_u64};
 
+mod priced;
+
 const MAGIC: &[u8; 4] = b"TKLZ";
 const TABLE_BITS: u32 = 20;
 const TABLE_LEN: usize = 1 << TABLE_BITS;
@@ -122,8 +124,19 @@ pub fn encode_lz_two_candidate_artifact(input: &[u8]) -> Vec<u8> {
     encode_lz_artifact_with_candidates(input, 2)
 }
 
+/// Encodes a complete RFC 0016 price-based parser research artifact.
+///
+/// The artifact uses the unchanged RFC 0014 `TKLZ` syntax and decoder.
+#[must_use]
+pub fn encode_lz_priced_artifact(input: &[u8]) -> Vec<u8> {
+    encode_blocks(input, priced::parse_priced(input))
+}
+
 fn encode_lz_artifact_with_candidates(input: &[u8], candidates: usize) -> Vec<u8> {
-    let blocks = parse(input, candidates);
+    encode_blocks(input, parse(input, candidates))
+}
+
+fn encode_blocks(input: &[u8], blocks: Vec<Block>) -> Vec<u8> {
     let mut encoder = RangeEncoder::new();
     let mut model = Match8Model::new();
     let mut types = AdaptiveDistribution::new(3);
@@ -728,7 +741,7 @@ struct Entry {
     occupied: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Block {
     Literal { start: usize, length: usize },
     Match { length: usize, distance: usize },

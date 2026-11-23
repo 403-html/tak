@@ -13,7 +13,8 @@ mod third_order_backoff;
 
 pub use lz::{
     LzEncodeStats, LzError, LzStreamError, LzStreamStats, decode_lz_artifact, decode_lz_stream,
-    encode_lz_artifact, encode_lz_stream, encode_lz_two_candidate_artifact,
+    encode_lz_artifact, encode_lz_priced_artifact, encode_lz_stream,
+    encode_lz_two_candidate_artifact,
     encode_lz_two_candidate_stream,
 };
 pub use match8::{
