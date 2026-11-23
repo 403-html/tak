@@ -100,8 +100,26 @@ Mozilla rows are in
 `6bebdf5190e5d8ab92bc4b067f2d6226a829868c2a053c47543fbb6f277e13ea`.
 
 The bounded implementation gate passes for correctness and memory, not speed.
-It removes the enwik9 memory blocker. Optimize the page-cache path after the
-first enwik9 result establishes whether RFC 0014 has enough ratio value.
+It removes the enwik9 memory blocker. The enwik9 result below justifies keeping
+the LZ mechanism, but later work must profile the cache and token model before
+changing the format.
+
+## Enwik9 validation
+
+At commit `1f22f24`, the bounded encoder produced a 281,430,633-byte artifact
+from the 1,000,000,000-byte enwik9 input. The bounded decoder restored the
+input exactly. The input and restored SHA-256 values were both
+`159b85351e5f76e60cbe32e04c677847a9ecba3adc79addab6f4c6c7aa3744bc`.
+The artifact SHA-256 was
+`14934b1b32a6f98af7576cd58e9faaa0c00f9587c0be6818c207997e8fe48bd2`.
+
+Encoding took 604.45 seconds, or 1.65 MB/s, with 46,240 KiB peak RSS. Decoding
+took 138.78 seconds, or 7.21 MB/s, with 95,004 KiB peak RSS. These are one-run
+measurements without a warm-up. The memory objective passes. Both throughput
+targets fail by large margins.
+
+Raw results are in `benchmarks/reports/raw/2026-11-23-lz-enwik9.tsv`, SHA-256
+`b9e7a3f5d949b686b4290d3772418fe2f6d8e0b9e9c53cd05539eb476d8789f7`.
 
 - CPU: Intel Xeon Platinum 8573C, x86-64, three visible logical CPUs.
 - OS: Linux 6.18.57.
@@ -110,14 +128,17 @@ first enwik9 result establishes whether RFC 0014 has enough ratio value.
 - Memory limit: none imposed.
 - Date: 2026-11-23 Europe/Warsaw.
 - Samples: one measured run per file without a warm-up.
-- Source: commit `3e410d9` plus the bounded-encoder working tree.
+- Source: bounded screens from the `3e410d9` working tree; enwik9 from commit
+  `1f22f24`.
 
 ## Distance to project goals
 
-The artifact has not been measured on enwik9. The last measured enwik9 result
-remains RFC 0009 at 315,578,766 bytes. M1 remains achieved by 6,421,234 bytes.
-M2 remains 118,578,766 bytes away and requires a 37.57% reduction. Do not
-extrapolate Calgary's 2.41% artifact reduction to enwik9.
+RFC 0014 improves RFC 0009 by 34,148,133 bytes, or 10.82%, on enwik9. It beats
+M1 by 40,569,367 bytes. It remains 46,101,694 bytes above Zstandard-19,
+65,756,437 bytes above xz, and 84,430,633 bytes above M2. It must remove 23.37%
+of its current bytes to match xz and 30.00% to reach M2. The Calgary 2.41%
+improvement did not predict the larger enwik9 gain; use measured corpus-specific
+results only.
 
 ## Reproduction
 

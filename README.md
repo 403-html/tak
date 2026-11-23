@@ -16,12 +16,14 @@ The current classical research model beats gzip -9 on Calgary and enwik9, but re
 |---|---:|
 | xz -9 | 215.67 MB |
 | Zstandard -19 | 235.33 MB |
-| **TAK (RFC 0009)** | **315.58 MB** |
+| **TAK (RFC 0014)** | **281.43 MB** |
 | gzip -9 | 322.59 MB |
 
-**TAK performance:** 6.54 MiB/s compression, 4.11 MiB/s decompression, approximately 29 MiB peak RSS. Exact SHA-256-verified restoration.
+**TAK performance:** 1.65 MB/s compression with 46,240 KiB peak RSS and
+7.21 MB/s decompression with 95,004 KiB peak RSS. Exact SHA-256-verified
+restoration. This bounded reference path prioritizes evidence over speed.
 
-[Full benchmark results](research/experiments/2026-11-23-enwik9-match8.md)
+[Full benchmark results](research/experiments/2026-11-23-entropy-coded-lz-artifact.md)
 
 ## Build
 
@@ -201,8 +203,14 @@ Bounded RFC 0014 encoding and decoding now produce the same artifact and exact
 restoration as the buffered path. On the 51,220,480-byte Mozilla input, bounded
 encoding used 68,768 KiB peak RSS and bounded decoding used 101,792 KiB. The
 encoder took 24.06 seconds, 3.24x the buffered candidate's internal time. This
-is a bounded reference path, not a throughput result. It removes the memory
-blocker for an enwik9 evaluation.
+is a bounded reference path, not a throughput result.
+
+The bounded path then produced a 281,430,633-byte enwik9 artifact and restored
+all 1,000,000,000 bytes exactly. It improves RFC 0009 by 34,148,133 bytes, or
+10.82%. It beats M1 by 40,569,367 bytes, but remains 46,101,694 bytes above
+Zstandard-19, 65,756,437 bytes above xz, and 84,430,633 bytes above M2.
+Encoding reached only 1.65 MB/s and decoding 7.21 MB/s, so ratio and throughput
+both remain research blockers.
 
 Reproduce the RFC 0002 tensor artifact with:
 

@@ -1,6 +1,6 @@
 # RFC 0014: Entropy-coded LZ opportunity gate
 
-- Status: Development artifact and bounded implementation accepted
+- Status: Bounded enwik9 result accepted
 - Date: 2026-11-23
 - Scope: Classical research diagnostic only
 - Format change: None
@@ -198,3 +198,20 @@ not an isolated encoder-memory measurement.
 The bounded implementation gate passes for correctness and memory. It does not
 pass the aspirational throughput target. Enwik9 evaluation is now permitted,
 but this reference encoder requires optimization before product use.
+
+## 12. Enwik9 result
+
+The bounded implementation produced a 281,430,633-byte artifact from the
+1,000,000,000-byte enwik9 input. It restored the exact input SHA-256. The
+artifact is 34,148,133 bytes, or 10.82%, smaller than RFC 0009.
+
+Encoding took 604.45 seconds, or 1.65 MB/s, and used 46,240 KiB peak RSS.
+Decoding took 138.78 seconds, or 7.21 MB/s, and used 95,004 KiB peak RSS. These
+are single-run measurements. They pass the one-gigabyte memory limit but fail
+the 50 MB/s encode and 200 MB/s decode targets.
+
+RFC 0014 beats the nominal M1 target by 40,569,367 bytes. It remains 46,101,694
+bytes larger than Zstandard-19, 65,756,437 bytes larger than xz, and 84,430,633
+bytes larger than M2. It must remove 23.37% of its current bytes to match xz
+and 30.00% to reach M2. Retain the LZ mechanism as a strong classical control.
+Do not claim competitive compression.
