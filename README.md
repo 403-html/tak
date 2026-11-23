@@ -118,6 +118,13 @@ memory failure but does not improve size or speed: TAK remains 46,643,002
 bytes above M1 and must remove 12.65% of its current artifact to reach that
 target.
 
+RFC 0008 identifies a different dependency for the next research stage. The
+byte following the most recent exact 8-byte suffix reduced ideal cross-entropy
+by 0.192 to 0.513 bits per byte across all five Silesia development groups
+after conditioning on RFC 0006. This is a diagnostic result, not compressed
+size. A bounded classical match artifact must measure its actual benefit before
+any tensor implementation or milestone claim.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console
@@ -156,6 +163,13 @@ cargo run --release -p tak-tensor --bin tak-order2-normalized-stream -- \
   encode input.bin output.tkn2 --strength 4
 cargo run --release -p tak-tensor --bin tak-order2-normalized-stream -- \
   decode output.tkn2 restored.bin --max-output 1000000000
+```
+
+Run the RFC 0008 dependency diagnostic with:
+
+```console
+cargo run --release -p tak-tensor --bin tak-match-dependency -- \
+  input.bin --tail-bytes 1000000
 ```
 
 ## License
