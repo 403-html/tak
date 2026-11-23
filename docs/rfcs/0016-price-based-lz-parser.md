@@ -7,14 +7,15 @@
 
 ## 1. Problem statement
 
-RFC 0015 requires the next ratio experiment to profile token costs and parser
-misses before it proposes a mechanism. The `tak-lz-profile` diagnostic
-replays the frozen RFC 0015 two-candidate parse and splits its ideal code
-length. It reproduces the RFC 0015 Silesia candidate bits exactly.
+RFC 0015 requires a profile of token costs and parser misses before the next
+ratio experiment. The `tak-lz-profile` diagnostic does this profile. It parses
+the input with the frozen RFC 0015 two-candidate parser. Then it divides the
+ideal code length into its parts. Its total is equal to the RFC 0015 Silesia
+candidate bits.
 
-On the five Silesia development groups, the profile shows:
+The profile gives these results on the five Silesia development groups:
 
-| Component | Ideal bits | Bits per input byte |
+| Part | Ideal bits | Bits per input byte |
 |---|---:|---:|
 | Literal bytes | 13,176,882 | 1.394 |
 | Distance remainder bits | 4,848,112 | 0.513 |
@@ -23,117 +24,135 @@ On the five Silesia development groups, the profile shows:
 | Literal lengths | 903,701 | 0.096 |
 | Block types | 572,106 | 0.061 |
 
-Two other candidate mechanisms are small upper bounds:
+Two other mechanisms have small upper limits:
 
-- Repeat-distance coding: matches that reuse one of the last four distances
-  spend 509,264 distance bits in total. That is 0.054 bits per byte before any
-  repeat-symbol cost, so a repeat alphabet cannot save more.
-- Literal exclusion: removing the known mismatching byte from the first
-  literal after each match saves 102,269 bits, or 0.011 bits per byte.
+- Repeat-distance coding. Some matches use one of the last four distances.
+  These matches use 509,264 distance bits in total. That is 0.054 bits per
+  byte. A repeat alphabet cannot save more than this value.
+- Literal exclusion. The first literal after a match cannot be equal to the
+  byte that stopped the match. If the model removes that byte, it saves
+  102,269 bits. That is 0.011 bits per byte.
 
-Distance remainder bits are the largest metadata cost, but they are stored
-uniformly because the bucket already captures most of their predictable
-magnitude. This RFC does not test distance remodeling.
+Distance remainder bits are the largest metadata cost. The bucket already
+holds most of their predictable magnitude, so the remainder bits are almost
+uniform. This RFC does not test a new distance model.
 
-The largest measured parser miss is cost-blind match acceptance. The greedy
-parser takes every match of at least eight bytes. For 145,471 of 416,990
-matches, the block type, length, and distance bits exceed the RFC 0009
-byte-model bits of the covered bytes. The excess is 658,220 bits, or 0.070
-bits per byte. A one-step lazy check also finds 46,144 matches for which the
-next position offers a longer match.
+The largest parser miss is that the parser does not compare costs. The greedy
+parser accepts every match of eight bytes or more. For 145,471 of 416,990
+matches, the type, length, and distance bits are more than the RFC 0009
+byte-model bits of the same bytes. The excess is 658,219 bits, or 0.070 bits
+per byte. A one-step lazy check also finds 46,144 matches where the next
+position has a longer match.
 
-The RFC 0009 byte model is updated with every input byte, whether a literal or
-match produced it. Its per-byte code length is therefore independent of the
-parse. An encoder can price every literal exactly and choose blocks by minimum
-total price without any decoder change.
+The RFC 0009 byte model updates with every input byte. A literal byte and a
+match byte update it in the same way. Thus the model cost of each byte does not
+change with the parse. An encoder can calculate the exact cost of each literal.
+It can then select the blocks with the lowest total cost. The decoder does not
+change.
 
 ## 2. Hypothesis
 
-A segment-wise minimum-price parser reduces complete `TKLZ` artifact size
-relative to the RFC 0015 artifact by at least 0.05 bits per input byte in
-aggregate on the five established Silesia development groups. It MUST reduce
-at least three of the five groups.
+A segment-wise lowest-cost parser makes the complete `TKLZ` artifact smaller
+than the RFC 0015 artifact. The decrease is at least 0.05 bits per input byte
+in aggregate on the five Silesia development groups. At least three of the
+five groups MUST decrease.
 
-The control is the complete RFC 0015 artifact produced from the same input.
-Both artifacts MUST decode with the unchanged RFC 0014 decoder and restore the
-input exactly.
+The control is the complete RFC 0015 artifact from the same input. Both
+artifacts MUST decode with the unchanged RFC 0014 decoder. Both MUST restore
+the input exactly.
 
 ## 3. Method
 
 The parser uses the RFC 0015 table, hash, window, minimum length, maximum
-length, and two-candidate replacement rule. It inserts every input position in
-input order, as the greedy parser does. Candidates at each position are
-therefore independent of the chosen parse.
+length, and two-candidate replacement rule. It inserts each input position in
+input order, as the greedy parser does. Thus the candidates at each position
+do not change with the parse.
 
-At each position, the parser considers the newest table candidate and the
-older candidate when the older candidate is strictly longer.
+At each position, the parser uses the newest table candidate. It also uses the
+older candidate if that candidate is longer.
 
-The input is parsed in segments of at most 65,536 positions. Each segment
-solves a two-state shortest path. One state ends in a literal block. The other
-ends in a match block or at the segment start.
+The parser divides the input into segments of 65,536 positions or fewer. For
+each segment, it finds the lowest-cost path through two states. One state ends
+with a literal block. The other state ends with a match block or at the start
+of the segment.
 
-- A literal byte costs its exact ideal RFC 0009 model bits.
-- Starting a literal block also costs the literal type and literal-length
-  bucket 0 prices.
-- A match costs the match type price, the match-length bucket price plus its
-  remainder bits, and the distance bucket price plus its remainder bits.
-- Every match length from 8 to 71 bytes is priced, plus the full available
-  length. A match is truncated at the segment end.
+- The cost of a literal byte is its exact ideal RFC 0009 model bits.
+- The start of a literal block also costs the literal type price and the
+  price of literal-length bucket 0.
+- The cost of a match is the sum of three parts: the match type price, the
+  match-length bucket price and its remainder bits, and the distance bucket
+  price and its remainder bits.
+- The parser calculates the cost of each match length from 8 to 71 bytes. It
+  also calculates the cost of the full available length. A match stops at the
+  end of the segment.
 
-Metadata prices are `log2(total / count)` from the encoder's adaptive
-distributions at segment start. The parser updates those distributions with
-every emitted block in encoder order, including halving at 16,384.
+Each metadata price is `log2(total / count)`. The counts come from the
+adaptive distributions of the encoder at the start of the segment. The parser
+updates these distributions with each block, in encoder order. The update
+includes the halving at 16,384.
 
-A candidate of at least 1,024 bytes ends the current segment and is emitted
-immediately at full length. The skipped positions are inserted into the table
-and the price model. This bounds work on long repeats.
+A candidate of 1,024 bytes or more stops the current segment. The parser emits
+it at full length immediately. Then it inserts the skipped positions into the
+table and the price model. This rule limits the work on long repeats.
 
-Literal runs that cross a segment boundary are emitted as one literal block.
-Prices use `f64` logarithms in the encoder only. Different platforms MAY emit
-different valid artifacts. The decoder is unaffected.
+A literal run that continues across a segment boundary is one literal block.
+The encoder calculates prices with `f64` logarithms. Thus different platforms
+MAY emit different valid artifacts. The decoder does not use these prices.
 
 ## 4. Gate and stop condition
 
-Run the complete RFC 0015 and RFC 0016 artifacts on the final-10% Silesia
-development partitions. Pass only if the hypothesis in Section 2 holds, every
-artifact restores exactly, and encoder peak RSS stays below one gigabyte.
+Make the complete RFC 0015 and RFC 0016 artifacts on the final-10% Silesia
+development partitions. The gate passes only if all of these conditions are
+true:
 
-If the gate fails, reject the parser. Do not tune the segment length, nice
-length, priced length range, literal start price, or candidate rule on the
-same development results.
+- The hypothesis in Section 2 is true.
+- Each artifact restores the input exactly.
+- The encoder peak RSS is less than one gigabyte.
 
-If the gate passes, freeze every parameter and validate on Calgary. The
-validation passes only if the Calgary aggregate artifact is smaller than RFC
-0015, every file restores exactly, and decode time stays within 1.10 times RFC
-0015. Report encode time without a pass threshold. Do not claim an enwik9
-result until a bounded encoder is measured on enwik9.
+If the gate fails, reject the parser. Do not tune the segment length, the nice
+length, the range of priced lengths, the literal start price, or the candidate
+rule on the same development results.
+
+If the gate passes, freeze all parameters and validate on Calgary. The
+validation passes only if all of these conditions are true:
+
+- The Calgary aggregate artifact is smaller than RFC 0015.
+- Each file restores exactly.
+- The decode time is not more than 1.10 times the RFC 0015 decode time.
+
+Report the encode time, but do not use it as a pass condition. Do not claim an
+enwik9 result before a bounded encoder runs on enwik9.
 
 ## 5. Tensor scope
 
-This RFC does not authorize a tensor model. It tests a classical parser
-limitation. A tensor attempt still requires a separate RFC that identifies a
-specific dependency that the rejected models cannot represent.
+This RFC does not permit a tensor model. It tests a limit of the classical
+parser. A tensor experiment still requires a separate RFC. That RFC must
+identify a specific dependency that the rejected models cannot represent.
 
 ## 6. Compatibility and security
 
-The `TKLZ` syntax, decoder, limits, and checksum are unchanged. Every emitted
-block satisfies the RFC 0014 length and distance limits. Existing decoder
-rejection conditions apply unchanged.
+The `TKLZ` syntax, decoder, limits, and checksum do not change. Each block
+from the parser is in the RFC 0014 length and distance limits. All decoder
+rejection conditions stay the same.
 
 ## 7. Testing strategy
 
-Unit tests MUST show that a priced parse covers the input in order, that each
-match copies bytes equal to its source, and that long runs cross both the
-segment and nice-length boundaries. Artifact tests MUST round-trip through the
-existing decoder.
+Unit tests MUST show these properties:
+
+- A priced parse covers the input in order.
+- Each match copies bytes that are equal to its source bytes.
+- Long runs cross the segment boundary and the nice-length boundary.
+
+Artifact tests MUST do a round trip through the existing decoder.
 
 ## 8. Results
 
 The Silesia development gate passes. The complete priced artifact is smaller
-on all five groups. Aggregate size falls from 2,845,106 to 2,702,364 bytes, a
-142,742-byte or 5.02% reduction. That is 0.1208 bits per input byte, above the
-0.05 threshold. Every artifact restores exactly through the unchanged decoder.
-Peak gate-process RSS, covering both encoders and decoders, is 145,056 KiB.
+on all five groups. The aggregate size decreases from 2,845,106 to 2,702,364
+bytes. That is a decrease of 142,742 bytes, or 5.02%. It is 0.1208 bits per
+input byte, which is more than the 0.05 threshold. Each artifact restores
+exactly through the unchanged decoder. The peak RSS of the gate process is
+145,056 KiB. This value includes both encoders and both decoders.
 
 | Group | RFC 0015 bytes | RFC 0016 bytes | Saved bits per byte |
 |---|---:|---:|---:|
@@ -143,33 +162,35 @@ Peak gate-process RSS, covering both encoders and decoders, is 145,056 KiB.
 | Mozilla | 1,767,879 | 1,695,206 | 0.1135 |
 | OOffice | 216,220 | 210,780 | 0.0707 |
 
-The frozen parser then improves all 18 Calgary files. Aggregate size falls
-from 996,359 to 950,768 bytes, a 45,591-byte or 4.58% reduction. Every file
-restores exactly.
+Then the frozen parser makes all 18 Calgary files smaller. The aggregate size
+decreases from 996,359 to 950,768 bytes. That is a decrease of 45,591 bytes,
+or 4.58%. Each file restores exactly.
 
-Five controlled Calgary repetitions after one warm-up give a median aggregate
-decode time of 0.903 seconds versus 0.820 seconds for RFC 0015. The ratio is
-1.102. It misses the 1.10 bound in Section 4 by 0.002. Median aggregate encode
-time is 1.933 seconds versus 1.679, or 1.15 times. Peak process RSS is 55,812
+The controlled Calgary timing uses one warm-up and five measured
+repetitions. The median aggregate decode time is 0.903 seconds. For RFC 0015
+it is 0.820 seconds. The ratio is 1.102. This is 0.002 more than the 1.10
+limit in Section 4. The median aggregate encode time is 1.933 seconds. For RFC
+0015 it is 1.679 seconds, so the ratio is 1.15. The peak process RSS is 55,812
 KiB.
 
 ## 9. Decision
 
-The size hypothesis passes on development and validation data. The
-pre-registered decode-time condition fails narrowly. Do not promote RFC 0016
-to the best-ratio profile, and do not relax the bound on the same
-measurement.
+The size hypothesis passes on the development data and the validation data.
+The decode-time condition fails by a small margin. Do not make RFC 0016 the
+best-ratio profile. Do not change the limit after this measurement.
 
-The decoder is unchanged. The extra decode time follows from the chosen
-blocks. On Calgary, the priced parse codes 1,895,245 bytes as literals instead
-of 936,030, and emits 79,345 matches instead of 165,917. Each literal costs an
-arithmetic-coded byte-model step, while match bytes only update the model.
-This block count comes from a separate instrumented run, not the timed run.
+The decoder does not change, so the parse causes the slower decode. On
+Calgary, the priced parse codes 1,895,245 bytes as literals. RFC 0015 codes
+936,030 bytes as literals. The priced parse has 79,345 matches. RFC 0015 has
+165,917 matches. The decoder must decode each literal with the arithmetic
+coder and the byte model. A match byte only updates the model. These block
+counts come from a separate instrumented run, not from the timed run.
 
-A follow-up MUST either state a new decode-time budget before any new
-measurement, or reduce decoder literal cost. Do not tune the parser parameters
-on these results. An enwik9 result requires a bounded priced encoder. The
-current research encoder reads the complete input, so enwik9 is unmeasured.
+A follow-up MUST do one of two things. It can set a new decode-time limit
+before a new measurement. Or it can decrease the decoder cost of literals. Do
+not tune the parser parameters on these results. An enwik9 result requires a
+bounded priced encoder. The current research encoder reads all of the input
+into memory, so there is no enwik9 result.
 
 Raw profile rows are in
 `benchmarks/reports/raw/2026-11-23-lz-profile-silesia.tsv`, SHA-256
@@ -191,45 +212,84 @@ Calgary block counts are in
 
 ## 10. Decoder literal-cost follow-up
 
-Section 9 permitted a follow-up that reduces decoder literal cost while the
-1.10 bound stays fixed. The follow-up changes decoder implementation only. It
-does not change the `TKLZ` syntax, the arithmetic, the model, or any artifact
-byte. Both RFC 0015 and RFC 0016 artifacts are byte-identical before and after
-the change, and the Calgary sizes in Section 8 are unchanged.
+Section 9 permits a follow-up that decreases the decoder cost of literals.
+The 1.10 limit does not change. The follow-up changes only the decoder
+implementation. It does not change the `TKLZ` syntax, the arithmetic, the
+model, or any artifact byte. The RFC 0015 and RFC 0016 artifacts are the same
+before and after the change. The Calgary sizes in Section 8 do not change.
 
-Instruction profiles of the bounded decoder showed that literal decoding was
-dominated by the byte-model symbol search, range-coder renormalization, and
-single-byte payload reads. Three changes address them:
+Instruction profiles of the bounded decoder show three large costs for
+literals: the byte-model symbol search, range-coder renormalization, and
+payload reads of one byte at a time. The follow-up has three changes:
 
-1. Dense byte distributions and normalized order-2 increments keep sums of
-   each 16-symbol group. Cumulative search scans group sums before symbols.
-   The sums are updated with every frequency change and recomputed after
-   halving.
-2. The bounded bit reader owns a 64 KiB buffer and serves bits from a 64-bit
-   register instead of reading one byte through `BufReader` per eight bits.
-3. Renormalization applies all half-interval steps, then all quarter steps,
-   with leading-bit counts. Equal leading bits of `low` and `high` give the
-   half steps. After those steps the leading bits differ, so a half step
-   cannot follow a quarter step. One quarter step equals a one-bit left shift
-   followed by inverting bit 31. A randomized test compares the result with
-   the single-bit loop on 20,000 states.
+1. Dense byte distributions and normalized order-2 increments keep the sum of
+   each group of 16 symbols. The cumulative search examines the group sums
+   first, and then the symbols in one group. Each frequency change also
+   updates its group sum. Halving calculates all group sums again.
+2. The bounded bit reader has its own 64 KiB buffer. It gives bits from a
+   64-bit register. Before the change, it read one byte through `BufReader`
+   for each eight bits.
+3. Renormalization does all half-interval steps, and then all quarter steps.
+   It uses leading-bit counts. The equal leading bits of `low` and `high` give
+   the number of half steps. After these steps the leading bits are
+   different, so a half step cannot follow a quarter step. One quarter step is
+   equal to a one-bit left shift, followed by inversion of bit 31. A
+   randomized test compares the result with the single-bit loop on 20,000
+   states.
 
-The same controlled Calgary procedure as Section 8 was repeated with the
-complete change. Median decode time is 0.694 seconds for RFC 0016 and 0.659
-seconds for RFC 0015, a ratio of 1.053. A second complete repetition of the
-procedure gives 1.050. Both pass the 1.10 bound. Median encode ratios are 1.17
-and 1.18. Peak process RSS is 56,180 KiB. Every decode is exact.
+The controlled Calgary timing from Section 8 was done again with all three
+changes. The median decode time is 0.694 seconds for RFC 0016 and 0.659
+seconds for RFC 0015. The ratio is 1.053. A second full run of the same
+procedure gives 1.050. Both results are in the 1.10 limit. The median encode
+ratios are 1.17 and 1.18. The peak process RSS is 56,180 KiB. Each decode is
+exact.
 
-An intermediate measurement after only the first two changes gave a decode
-ratio of 1.124. Those changes also accelerated work shared by literals and
-matches, so the ratio rose even though both decoders became faster. That row is
-kept in the raw file.
+An intermediate run with only the first two changes gave a decode ratio of
+1.124. These two changes also decrease the cost of work that literals and
+matches share. Thus the ratio increased, but both decoders became faster. The
+raw file keeps this run.
 
-RFC 0016 now passes every Section 4 validation condition. It is the smallest
-measured TAK Calgary result. It is not the README profile, because its enwik9
-result is unmeasured. A bounded priced encoder and one enwik9 measurement are
-the next required step.
+RFC 0016 now passes all validation conditions in Section 4. It is the smallest
+measured TAK Calgary result. It is not the README profile, because there is no
+enwik9 result.
 
 Controlled decoder rows are in
 `benchmarks/reports/raw/2026-11-23-lz-priced-decoder-controlled.tsv`, SHA-256
 `cab8b54f2b82b3863068ba3a3894f6b79759fbf39f7a68900ae47aeb72bc0639`.
+
+## 11. Bounded encoder
+
+The bounded encoder reads a seekable input in sequence into a 128 MiB ring
+buffer. The ring holds the 64 MiB match window, one maximum match of
+lookahead, and one 1 MiB read. The encoder writes a literal block only after
+it knows the block length. If a literal run is older than the ring, the
+encoder reads it again from the input in 64 KiB pages. The encoder keeps a
+pricing model, a coding model, the match table, and one parser segment. It does
+not keep the complete input, the block list, or the arithmetic payload.
+
+The bounded encoder makes the same artifacts as the buffered encoder. Tests
+show this on mixed input and on empty and tiny input. A test with a 64 KiB
+ring also makes the encoder read old literal bytes again.
+
+On the complete 51,220,480-byte Mozilla file, both encoders made the same
+19,299,991-byte artifact. This artifact is 805,664 bytes, or 4.01%, smaller
+than the bounded RFC 0015 artifact of the same file. The bounded RFC 0016
+encode took 26.92 seconds with 189,476 KiB peak RSS. The bounded decode took
+8.07 seconds with 105,444 KiB peak RSS. It restored the exact input. In the
+same session, the bounded RFC 0015 encode took 22.18 seconds and its decode
+took 7.45 seconds. These are single screening runs. The Mozilla file includes
+the development tail, so this result is not validation evidence.
+
+The bounded encoder agrees with the memory rule for enwik9. There is still no
+enwik9 result, because the measurement host could not get the enwik9 file. Do
+the measurement once, with no changes, with these commands:
+
+```console
+target/release/tak-lz-stream encode-priced-bounded enwik9 enwik9.tklz
+target/release/tak-lz-stream decode enwik9.tklz enwik9.out \
+  --max-output 1000000000
+```
+
+Raw rows are in
+`benchmarks/reports/raw/2026-11-23-lz-priced-bounded-mozilla.tsv`, SHA-256
+`07b9fd18525e987bf9730ff96c302fa9975437003ea9a4fd6b7592150af3ff25`.

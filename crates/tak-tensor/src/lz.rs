@@ -132,6 +132,21 @@ pub fn encode_lz_priced_artifact(input: &[u8]) -> Vec<u8> {
     encode_blocks(input, priced::parse_priced(input))
 }
 
+/// Encodes an RFC 0016 price-based parser artifact with bounded memory.
+///
+/// The artifact is byte-identical to [`encode_lz_priced_artifact`].
+///
+/// # Errors
+///
+/// Returns an error for I/O failure, a nonempty output, or an input larger than
+/// the experimental format's `u32` encoder-position limit.
+pub fn encode_lz_priced_stream(
+    mut input: impl Read + Seek,
+    mut output: impl Write + Seek,
+) -> Result<LzEncodeStats, LzStreamError> {
+    priced::encode_priced_stream(&mut input, &mut output)
+}
+
 fn encode_lz_artifact_with_candidates(input: &[u8], candidates: usize) -> Vec<u8> {
     encode_blocks(input, parse(input, candidates))
 }

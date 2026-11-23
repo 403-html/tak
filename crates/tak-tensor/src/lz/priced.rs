@@ -3,11 +3,14 @@
 //! The parser changes only encoder choices. Every block it emits is a valid
 //! RFC 0014 block, so the existing decoder restores the output.
 
+use std::io::{self, Read, Seek, SeekFrom, Write};
+
 use tak_context::{ByteModel, Match8Model};
 
 use super::{
-    AdaptiveDistribution, Block, Entry, MAX_DISTANCE, MAX_MATCH, MIN_MATCH, TABLE_LEN, insert,
-    key_at, table_index,
+    AdaptiveDistribution, Block, Entry, HEADER_LEN, LzEncodeStats, LzError, LzStreamError, MAGIC,
+    MAX_DISTANCE, MAX_MATCH, MIN_MATCH, StreamRangeEncoder, TABLE_LEN, encode_adaptive_streaming,
+    encode_bucket_streaming, key_at, stream_crc, table_index,
 };
 
 /// Maximum number of positions in one dynamic-programming segment.
@@ -136,36 +139,105 @@ impl Emitter {
         self.state.distances.update(bucket_of(distance - 1));
         self.blocks.push(Block::Match { length, distance });
     }
+}
 
-    fn finish(mut self) -> Vec<Block> {
-        self.flush_literal();
-        self.blocks
+/// Random-access encoder input for the priced parser.
+///
+/// Implementations may fail only for I/O reasons. Every position passed to a
+/// method is below `len`.
+pub(super) trait PricedInput {
+    /// Returns the complete input length.
+    fn len(&self) -> usize;
+
+    /// Returns the byte at `position`.
+    fn byte(&mut self, position: usize) -> Result<u8, LzStreamError>;
+
+    /// Returns the big-endian 8-byte key at `position`, if eight bytes remain.
+    fn key(&mut self, position: usize) -> Result<Option<u64>, LzStreamError>;
+
+    /// Extends a match of at least `MIN_MATCH` bytes up to `limit` bytes.
+    fn match_length(
+        &mut self,
+        position: usize,
+        candidate: usize,
+        limit: usize,
+    ) -> Result<usize, LzStreamError>;
+}
+
+/// In-memory input.
+struct SliceInput<'a>(&'a [u8]);
+
+impl PricedInput for SliceInput<'_> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn byte(&mut self, position: usize) -> Result<u8, LzStreamError> {
+        Ok(self.0[position])
+    }
+
+    fn key(&mut self, position: usize) -> Result<Option<u64>, LzStreamError> {
+        Ok(key_at(self.0, position))
+    }
+
+    fn match_length(
+        &mut self,
+        position: usize,
+        candidate: usize,
+        limit: usize,
+    ) -> Result<usize, LzStreamError> {
+        let mut length = MIN_MATCH;
+        while length < limit && self.0[candidate + length] == self.0[position + length] {
+            length += 1;
+        }
+        Ok(length)
     }
 }
 
 /// Parses `input` with segment-wise minimum-price dynamic programming.
 pub(super) fn parse_priced(input: &[u8]) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    parse_priced_with(&mut SliceInput(input), |_, block| {
+        blocks.push(block);
+        Ok(())
+    })
+    .expect("in-memory input cannot fail");
+    blocks
+}
+
+/// Runs the priced parser and passes every block to `sink` in encoder order.
+///
+/// The parser retains at most one segment of candidates and prices. Blocks are
+/// passed to `sink` after each segment, except a literal run that may continue
+/// into the next segment.
+pub(super) fn parse_priced_with<I: PricedInput>(
+    input: &mut I,
+    mut sink: impl FnMut(&mut I, Block) -> Result<(), LzStreamError>,
+) -> Result<(), LzStreamError> {
+    let input_len = input.len();
     let mut table = vec![Entry::default(); TABLE_LEN];
     let mut model = Match8Model::new();
     let mut emitter = Emitter::new();
     let mut candidates: Vec<[Candidate; 2]> = Vec::with_capacity(SEGMENT_LEN);
     let mut literal_bits: Vec<f64> = Vec::with_capacity(SEGMENT_LEN);
     let mut position = 0;
-    while position < input.len() {
+    while position < input_len {
         let start = position;
         candidates.clear();
         literal_bits.clear();
         let mut forced = None;
-        while position < input.len() && position - start < SEGMENT_LEN {
-            let found = find_candidates(input, position, &table);
+        while position < input_len && position - start < SEGMENT_LEN {
+            let key = input.key(position)?;
+            let found = find_candidates(input, position, key, &table)?;
             if found[0].length as usize >= NICE_LENGTH {
                 forced = Some(found[0]);
                 break;
             }
             candidates.push(found);
-            literal_bits.push(model_bits(&model, input[position]));
-            insert(input, position, &mut table);
-            model.update(input[position]);
+            let byte = input.byte(position)?;
+            literal_bits.push(model_bits(&model, byte));
+            insert_key(&mut table, key, position);
+            model.update(byte);
             position += 1;
         }
         solve_segment(start, &candidates, &literal_bits, &mut emitter);
@@ -173,31 +245,273 @@ pub(super) fn parse_priced(input: &[u8]) -> Vec<Block> {
             let length = candidate.length as usize;
             emitter.matched(length, candidate.distance as usize);
             for consumed in position..position + length {
-                insert(input, consumed, &mut table);
-                model.update(input[consumed]);
+                let key = input.key(consumed)?;
+                insert_key(&mut table, key, consumed);
+                model.update(input.byte(consumed)?);
             }
             position += length;
         }
+        for block in emitter.blocks.drain(..) {
+            sink(input, block)?;
+        }
     }
-    emitter.finish()
+    emitter.flush_literal();
+    for block in emitter.blocks.drain(..) {
+        sink(input, block)?;
+    }
+    Ok(())
+}
+
+/// Ring-buffer length for bounded input. It holds the 64 MiB match window, one
+/// maximum match of lookahead, and one read chunk.
+const RING_LEN: usize = 128 * 1024 * 1024;
+/// Sequential reads use `ring_len / READ_CHUNKS_PER_RING` bytes, so a read
+/// never wraps the ring.
+const READ_CHUNKS_PER_RING: usize = 128;
+/// Page size for rereading literal bytes older than the ring.
+const OLD_PAGE_LEN: usize = 64 * 1024;
+
+/// Bounded seekable input with a sequential ring buffer.
+///
+/// Positions within `RING_LEN` bytes of the read frontier come from the ring.
+/// Older positions, which only long literal runs need, are reread from the
+/// input one page at a time.
+struct WindowInput<R> {
+    input: R,
+    len: usize,
+    ring: Vec<u8>,
+    ring_mask: usize,
+    read_chunk: usize,
+    loaded: usize,
+    old_page: Vec<u8>,
+    old_page_start: Option<usize>,
+}
+
+impl<R: Read + Seek> WindowInput<R> {
+    /// Creates an input with a power-of-two ring of `ring_len` bytes.
+    ///
+    /// The ring must exceed the match window plus `MAX_MATCH` and one read, or
+    /// every match distance in the input must be that much smaller than it.
+    fn new(input: R, len: usize, ring_len: usize) -> Self {
+        debug_assert!(ring_len.is_power_of_two() && ring_len >= READ_CHUNKS_PER_RING);
+        Self {
+            input,
+            len,
+            ring: vec![0; ring_len],
+            ring_mask: ring_len - 1,
+            read_chunk: ring_len / READ_CHUNKS_PER_RING,
+            loaded: 0,
+            old_page: vec![0; OLD_PAGE_LEN],
+            old_page_start: None,
+        }
+    }
+
+    /// Reads sequentially until `end` bytes, or the whole input, are loaded.
+    fn ensure(&mut self, end: usize) -> Result<(), LzStreamError> {
+        let end = end.min(self.len);
+        while self.loaded < end {
+            let length = self.read_chunk.min(self.len - self.loaded);
+            let offset = self.loaded & self.ring_mask;
+            self.input.seek(SeekFrom::Start(self.loaded as u64))?;
+            self.input
+                .read_exact(&mut self.ring[offset..offset + length])?;
+            self.loaded += length;
+        }
+        Ok(())
+    }
+
+    fn in_ring(&self, position: usize) -> bool {
+        position < self.loaded && self.loaded - position <= self.ring.len()
+    }
+
+    fn old_byte(&mut self, position: usize) -> Result<u8, LzStreamError> {
+        let start = position - position % OLD_PAGE_LEN;
+        if self.old_page_start != Some(start) {
+            let length = OLD_PAGE_LEN.min(self.len - start);
+            self.input.seek(SeekFrom::Start(start as u64))?;
+            self.input.read_exact(&mut self.old_page[..length])?;
+            self.old_page_start = Some(start);
+        }
+        Ok(self.old_page[position - start])
+    }
+}
+
+impl<R: Read + Seek> PricedInput for WindowInput<R> {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn byte(&mut self, position: usize) -> Result<u8, LzStreamError> {
+        self.ensure(position + 1)?;
+        if self.in_ring(position) {
+            Ok(self.ring[position & self.ring_mask])
+        } else {
+            self.old_byte(position)
+        }
+    }
+
+    fn key(&mut self, position: usize) -> Result<Option<u64>, LzStreamError> {
+        if self.len - position < MIN_MATCH {
+            return Ok(None);
+        }
+        let mut key = 0;
+        for offset in 0..MIN_MATCH {
+            key = (key << 8) | u64::from(self.byte(position + offset)?);
+        }
+        Ok(Some(key))
+    }
+
+    fn match_length(
+        &mut self,
+        position: usize,
+        candidate: usize,
+        limit: usize,
+    ) -> Result<usize, LzStreamError> {
+        self.ensure(position + limit)?;
+        debug_assert!(self.in_ring(candidate));
+        let mut length = MIN_MATCH;
+        while length < limit
+            && self.ring[(candidate + length) & self.ring_mask]
+                == self.ring[(position + length) & self.ring_mask]
+        {
+            length += 1;
+        }
+        Ok(length)
+    }
+}
+
+/// Encodes an RFC 0016 artifact with bounded memory.
+///
+/// The encoder retains a 128 MiB input ring, two RFC 0009 byte models, the
+/// match table, and one parser segment. It does not retain the complete input,
+/// block list, or arithmetic payload. The artifact is byte-identical to
+/// [`super::encode_lz_priced_artifact`].
+pub(super) fn encode_priced_stream(
+    input: &mut (impl Read + Seek),
+    output: &mut (impl Write + Seek),
+) -> Result<LzEncodeStats, LzStreamError> {
+    encode_priced_stream_with_ring(input, output, RING_LEN)
+}
+
+fn encode_priced_stream_with_ring(
+    input: &mut (impl Read + Seek),
+    output: &mut (impl Write + Seek),
+    ring_len: usize,
+) -> Result<LzEncodeStats, LzStreamError> {
+    let input_len = input.seek(SeekFrom::End(0))?;
+    if input_len > u64::from(u32::MAX) {
+        return Err(LzStreamError::InputTooLarge);
+    }
+    let crc = stream_crc(input, input_len)?;
+    if output.seek(SeekFrom::End(0))? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "TKLZ streaming output must be empty",
+        )
+        .into());
+    }
+    output.seek(SeekFrom::Start(0))?;
+    output.write_all(&[0_u8; HEADER_LEN])?;
+
+    let len = usize::try_from(input_len).map_err(|_| LzStreamError::InputTooLarge)?;
+    let mut source = WindowInput::new(input, len, ring_len);
+    let mut encoder = StreamRangeEncoder::new(&mut *output);
+    let mut model = Match8Model::new();
+    let mut types = AdaptiveDistribution::new(3);
+    let mut literal_lengths = AdaptiveDistribution::new(SYMBOLS);
+    let mut match_lengths = AdaptiveDistribution::new(SYMBOLS);
+    let mut distances = AdaptiveDistribution::new(SYMBOLS);
+    let mut position = 0_usize;
+    parse_priced_with(&mut source, |source, block| {
+        match block {
+            Block::Literal { start, length } => {
+                debug_assert_eq!(start, position);
+                encode_adaptive_streaming(&mut encoder, &mut types, 0)?;
+                encode_bucket_streaming(&mut encoder, &mut literal_lengths, length - 1)?;
+                for offset in 0..length {
+                    let byte = source.byte(start + offset)?;
+                    let (low, high, total) = model.range(byte);
+                    encoder.encode(low, high, total)?;
+                    model.update(byte);
+                }
+                position += length;
+            }
+            Block::Match { length, distance } => {
+                encode_adaptive_streaming(&mut encoder, &mut types, 1)?;
+                encode_bucket_streaming(&mut encoder, &mut match_lengths, length - MIN_MATCH)?;
+                encode_bucket_streaming(&mut encoder, &mut distances, distance - 1)?;
+                for offset in 0..length {
+                    model.update(source.byte(position + offset)?);
+                }
+                position += length;
+            }
+        }
+        Ok(())
+    })?;
+    if position != len {
+        return Err(LzError::InvalidArtifact.into());
+    }
+    encode_adaptive_streaming(&mut encoder, &mut types, 2)?;
+    let (output, payload_len) = encoder.finish()?;
+    let artifact_len = (HEADER_LEN as u64)
+        .checked_add(payload_len)
+        .ok_or(LzError::InvalidArtifact)?;
+    output.seek(SeekFrom::Start(0))?;
+    output.write_all(MAGIC)?;
+    output.write_all(&[0; 4])?;
+    output.write_all(&input_len.to_le_bytes())?;
+    output.write_all(&payload_len.to_le_bytes())?;
+    output.write_all(&crc.finish().to_le_bytes())?;
+    output.flush()?;
+    Ok(LzEncodeStats {
+        input_bytes: input_len,
+        payload_bytes: payload_len,
+        artifact_bytes: artifact_len,
+    })
+}
+
+fn insert_key(table: &mut [Entry], key: Option<u64>, position: usize) {
+    let Some(key) = key else {
+        return;
+    };
+    let entry = &mut table[table_index(key)];
+    let position = u32::try_from(position).expect("encoder input is bounded to u32");
+    if entry.occupied && entry.key == key {
+        entry.previous_position = entry.position;
+        entry.has_previous = true;
+        entry.position = position;
+    } else {
+        *entry = Entry {
+            key,
+            position,
+            previous_position: 0,
+            has_previous: false,
+            occupied: true,
+        };
+    }
 }
 
 /// Returns the newest candidate first. The older candidate is kept only when
 /// it is strictly longer. A length of zero marks an absent candidate.
-fn find_candidates(input: &[u8], position: usize, table: &[Entry]) -> [Candidate; 2] {
+fn find_candidates<I: PricedInput>(
+    input: &mut I,
+    position: usize,
+    key: Option<u64>,
+    table: &[Entry],
+) -> Result<[Candidate; 2], LzStreamError> {
     let mut found = [Candidate::default(); 2];
-    let Some(key) = key_at(input, position) else {
-        return found;
+    let Some(key) = key else {
+        return Ok(found);
     };
     let entry = table[table_index(key)];
     if !entry.occupied || entry.key != key {
-        return found;
+        return Ok(found);
     }
-    if let Some(newest) = candidate_at(input, position, entry.position) {
+    if let Some(newest) = candidate_at(input, position, entry.position)? {
         found[0] = newest;
     }
     if entry.has_previous {
-        if let Some(older) = candidate_at(input, position, entry.previous_position) {
+        if let Some(older) = candidate_at(input, position, entry.previous_position)? {
             if older.length > found[0].length {
                 if found[0].length == 0 {
                     found[0] = older;
@@ -210,24 +524,27 @@ fn find_candidates(input: &[u8], position: usize, table: &[Entry]) -> [Candidate
     if found[1].length > found[0].length {
         found.swap(0, 1);
     }
-    found
+    Ok(found)
 }
 
-fn candidate_at(input: &[u8], position: usize, candidate: u32) -> Option<Candidate> {
+fn candidate_at<I: PricedInput>(
+    input: &mut I,
+    position: usize,
+    candidate: u32,
+) -> Result<Option<Candidate>, LzStreamError> {
     let candidate = usize::try_from(candidate).expect("input position fits usize");
-    let distance = position.checked_sub(candidate)?;
-    if distance == 0 || distance > MAX_DISTANCE {
-        return None;
-    }
+    let Some(distance) = position
+        .checked_sub(candidate)
+        .filter(|&distance| distance != 0 && distance <= MAX_DISTANCE)
+    else {
+        return Ok(None);
+    };
     let limit = MAX_MATCH.min(input.len() - position);
-    let mut length = MIN_MATCH;
-    while length < limit && input[candidate + length] == input[position + length] {
-        length += 1;
-    }
-    Some(Candidate {
+    let length = input.match_length(position, candidate, limit)?;
+    Ok(Some(Candidate {
         length: u32::try_from(length).expect("match length is bounded"),
         distance: u32::try_from(distance).expect("distance is bounded"),
-    })
+    }))
 }
 
 fn model_bits(model: &Match8Model, byte: u8) -> f64 {
@@ -361,7 +678,68 @@ fn solve_segment(
 
 #[cfg(test)]
 mod tests {
-    use super::{Block, parse_priced};
+    use std::io::Cursor;
+
+    use super::super::{decode_lz_artifact, encode_lz_priced_artifact};
+    use super::{Block, encode_priced_stream, encode_priced_stream_with_ring, parse_priced};
+
+    fn noise(length: usize, mut state: u64) -> Vec<u8> {
+        (0..length)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state.to_le_bytes()[0]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn bounded_encoder_matches_buffered_artifact() {
+        let mut input = Vec::new();
+        for round in 0..2_000_u32 {
+            input.extend_from_slice(b"bounded priced parsing ");
+            input.extend_from_slice(&(round % 61).to_le_bytes());
+        }
+        input.extend(noise(70_000, 7));
+        input.extend_from_slice(&input.clone()[..90_000]);
+        let mut output = Cursor::new(Vec::new());
+        let stats = encode_priced_stream(&mut Cursor::new(&input), &mut output).unwrap();
+        let artifact = output.into_inner();
+        assert_eq!(artifact, encode_lz_priced_artifact(&input));
+        assert_eq!(stats.artifact_bytes, artifact.len() as u64);
+        assert_eq!(
+            decode_lz_artifact(&artifact, input.len() as u64).unwrap(),
+            input
+        );
+    }
+
+    #[test]
+    fn literal_runs_older_than_the_ring_are_reread() {
+        // A long random literal run exceeds a 64 KiB test ring. The only
+        // repeats are within a few hundred bytes, inside the ring.
+        let mut input = noise(300_000, 11);
+        let tail = input[299_000..299_600].to_vec();
+        input.extend_from_slice(&tail);
+        input.extend_from_slice(&tail);
+        let mut output = Cursor::new(Vec::new());
+        encode_priced_stream_with_ring(&mut Cursor::new(&input), &mut output, 64 * 1024).unwrap();
+        let artifact = output.into_inner();
+        assert_eq!(artifact, encode_lz_priced_artifact(&input));
+        assert_eq!(
+            decode_lz_artifact(&artifact, input.len() as u64).unwrap(),
+            input
+        );
+    }
+
+    #[test]
+    fn bounded_encoder_handles_empty_and_tiny_inputs() {
+        for input in [&b""[..], b"a", b"abcdefgh"] {
+            let mut output = Cursor::new(Vec::new());
+            encode_priced_stream(&mut Cursor::new(input), &mut output).unwrap();
+            assert_eq!(output.into_inner(), encode_lz_priced_artifact(input));
+        }
+    }
 
     fn covered(blocks: &[Block]) -> usize {
         blocks

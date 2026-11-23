@@ -1,0 +1,4 @@
+implementation	input_bytes	artifact_bytes	encode_seconds	decode_seconds	encode_peak_rss_kib	decode_peak_rss_kib	artifact_sha256	roundtrip	measurement_scope
+rfc0015-bounded-stream	51220480	20105655	22.181283432	7.449783007	80156	105148	4811a4295f446332a9d2dd0d664be33f5fbac4a981e744678f01767296342db3	true	encode and decode measured in separate processes
+rfc0016-bounded-stream	51220480	19299991	26.922018896	8.068276341	189476	105444	94ac5ffeb62e86ddce4188234b920abed2c65a56b28c57b9ce909f1f77091699	true	encode and decode measured in separate processes
+rfc0016-buffered	51220480	19299991	21.364682387		200864		94ac5ffeb62e86ddce4188234b920abed2c65a56b28c57b9ce909f1f77091699	true	encode only; byte-identical to the bounded artifact
