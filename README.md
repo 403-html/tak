@@ -195,12 +195,14 @@ bytes above xz. Keep it as a fast classical research component, not a new
 compression-ratio record.
 
 Five controlled Calgary repetitions confirmed median encode and decode ratios
-of 0.74x and 0.54x versus RFC 0009. The next gate is bounded streaming; the
-buffered encoder still retains the complete input and payload.
+of 0.74x and 0.54x versus RFC 0009.
 
-A bounded RFC 0014 decoder now restores through 64 KiB I/O buffers and a
-64 MiB match window. It restored the full 51,220,480-byte Mozilla input exactly
-with 101,788 KiB peak RSS. Bounded encoding remains required before enwik9.
+Bounded RFC 0014 encoding and decoding now produce the same artifact and exact
+restoration as the buffered path. On the 51,220,480-byte Mozilla input, bounded
+encoding used 68,768 KiB peak RSS and bounded decoding used 101,792 KiB. The
+encoder took 24.06 seconds, 3.24x the buffered candidate's internal time. This
+is a bounded reference path, not a throughput result. It removes the memory
+blocker for an enwik9 evaluation.
 
 Reproduce the RFC 0002 tensor artifact with:
 

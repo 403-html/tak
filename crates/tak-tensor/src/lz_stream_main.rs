@@ -1,9 +1,9 @@
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::fs::{File, OpenOptions};
+use std::io::BufWriter;
 use std::path::Path;
 use std::{env, process::ExitCode};
 
-use tak_tensor::{decode_lz_stream, encode_lz_artifact};
+use tak_tensor::{decode_lz_stream, encode_lz_stream};
 
 fn main() -> ExitCode {
     match run() {
@@ -35,12 +35,10 @@ fn run() -> Result<(), String> {
 
 fn encode(input: &str, output: &str) -> Result<(), String> {
     require_new_output(output)?;
-    let input = fs::read(input).map_err(|error| error.to_string())?;
-    let artifact = encode_lz_artifact(&input);
-    let mut output = create_new(output)?;
-    output
-        .write_all(&artifact)
-        .and_then(|()| output.flush())
+    let input = File::open(input).map_err(|error| error.to_string())?;
+    let output = create_new(output)?;
+    encode_lz_stream(input, output)
+        .map(|_| ())
         .map_err(|error| error.to_string())
 }
 

@@ -13,6 +13,8 @@ const MIN_MATCH: usize = 8;
 const MAX_MATCH: usize = 65_535;
 const MAX_DISTANCE: usize = 64 * 1024 * 1024;
 const MAX_DISTANCE_U64: u64 = 64 * 1024 * 1024;
+const INPUT_PAGE_LEN: usize = 64 * 1024;
+const INPUT_PAGE_COUNT: usize = 4;
 const MAX_TOTAL: u32 = 16_384;
 const RANGE_MAX: u64 = u32::MAX as u64;
 const HALF: u64 = 0x8000_0000;
@@ -54,11 +56,24 @@ pub struct LzStreamStats {
     pub payload_bytes: u64,
 }
 
+/// Byte counts produced by bounded RFC 0014 streaming encode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LzEncodeStats {
+    /// Source bytes read from the input.
+    pub input_bytes: u64,
+    /// Arithmetic payload bytes written after the artifact header.
+    pub payload_bytes: u64,
+    /// Complete artifact bytes written to the output.
+    pub artifact_bytes: u64,
+}
+
 /// Errors produced by bounded RFC 0014 streaming decode.
 #[derive(Debug)]
 pub enum LzStreamError {
     /// The artifact is invalid.
     Artifact(LzError),
+    /// The source exceeds the experimental encoder-position limit.
+    InputTooLarge,
     /// Reading or writing failed.
     Io(io::Error),
 }
@@ -67,6 +82,7 @@ impl std::fmt::Display for LzStreamError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Artifact(error) => error.fmt(formatter),
+            Self::InputTooLarge => formatter.write_str("TKLZ input exceeds u32 positions"),
             Self::Io(error) => write!(formatter, "TKLZ stream I/O failed: {error}"),
         }
     }
@@ -76,6 +92,7 @@ impl std::error::Error for LzStreamError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Artifact(error) => Some(error),
+            Self::InputTooLarge => None,
             Self::Io(error) => Some(error),
         }
     }
@@ -141,6 +158,134 @@ pub fn encode_lz_artifact(input: &[u8]) -> Vec<u8> {
     artifact.extend_from_slice(&crc32(input).to_le_bytes());
     artifact.extend_from_slice(&payload);
     artifact
+}
+
+fn stream_crc(input: &mut (impl Read + Seek), input_len: u64) -> Result<Crc32, LzStreamError> {
+    input.seek(SeekFrom::Start(0))?;
+    let mut crc = Crc32::new();
+    let mut buffer = vec![0_u8; INPUT_PAGE_LEN];
+    let mut remaining = input_len;
+    while remaining != 0 {
+        let wanted = usize::try_from(remaining.min(INPUT_PAGE_LEN as u64))
+            .map_err(|_| LzError::InvalidArtifact)?;
+        input.read_exact(&mut buffer[..wanted])?;
+        crc.update_slice(&buffer[..wanted]);
+        remaining -= u64::try_from(wanted).map_err(|_| LzError::InvalidArtifact)?;
+    }
+    Ok(crc)
+}
+
+/// Encodes an RFC 0014 artifact without retaining the complete input, block
+/// list, or arithmetic payload.
+///
+/// The input and output must be seekable. The encoder uses four 64 KiB input
+/// pages in addition to the fixed match and probability-model tables. It
+/// patches the artifact header after the payload length is known.
+///
+/// # Errors
+///
+/// Returns an error for I/O failure or an input larger than the experimental
+/// format's `u32` encoder-position limit.
+pub fn encode_lz_stream(
+    mut input: impl Read + Seek,
+    mut output: impl Write + Seek,
+) -> Result<LzEncodeStats, LzStreamError> {
+    let input_len = input.seek(SeekFrom::End(0))?;
+    if input_len > u64::from(u32::MAX) {
+        return Err(LzStreamError::InputTooLarge);
+    }
+    let crc = stream_crc(&mut input, input_len)?;
+
+    if output.seek(SeekFrom::End(0))? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "TKLZ streaming output must be empty",
+        )
+        .into());
+    }
+    output.seek(SeekFrom::Start(0))?;
+    output.write_all(&[0_u8; HEADER_LEN])?;
+    let mut encoder = StreamRangeEncoder::new(output);
+    let mut source = PageCache::new(input, input_len);
+    let mut table = vec![Entry::default(); TABLE_LEN];
+    let mut model = Match8Model::new();
+    let mut types = AdaptiveDistribution::new(3);
+    let mut literal_lengths = AdaptiveDistribution::new(32);
+    let mut match_lengths = AdaptiveDistribution::new(32);
+    let mut distances = AdaptiveDistribution::new(32);
+    let mut literal_start = 0_u64;
+    let mut literal_length = 0_usize;
+    let mut position = 0_u64;
+
+    while position < input_len {
+        if let Some((length, distance)) =
+            find_match_stream(&mut source, position, input_len, &table)?
+        {
+            if literal_length != 0 {
+                encode_literal_stream(
+                    &mut encoder,
+                    &mut source,
+                    &mut model,
+                    &mut types,
+                    &mut literal_lengths,
+                    literal_start,
+                    literal_length,
+                )?;
+                literal_length = 0;
+            }
+            encode_adaptive_streaming(&mut encoder, &mut types, 1)?;
+            encode_bucket_streaming(&mut encoder, &mut match_lengths, length - MIN_MATCH)?;
+            encode_bucket_streaming(&mut encoder, &mut distances, distance - 1)?;
+            for offset in 0..length {
+                let offset = u64::try_from(offset).map_err(|_| LzError::InvalidArtifact)?;
+                let byte = source
+                    .byte_at(position + offset)?
+                    .ok_or(LzError::InvalidArtifact)?;
+                model.update(byte);
+                insert_stream(&mut source, position + offset, &mut table)?;
+            }
+            position += u64::try_from(length).map_err(|_| LzError::InvalidArtifact)?;
+            literal_start = position;
+        } else {
+            if literal_length == 0 {
+                literal_start = position;
+            }
+            literal_length = literal_length
+                .checked_add(1)
+                .ok_or(LzError::InvalidArtifact)?;
+            insert_stream(&mut source, position, &mut table)?;
+            position += 1;
+        }
+    }
+    if literal_length != 0 {
+        encode_literal_stream(
+            &mut encoder,
+            &mut source,
+            &mut model,
+            &mut types,
+            &mut literal_lengths,
+            literal_start,
+            literal_length,
+        )?;
+    }
+    encode_adaptive_streaming(&mut encoder, &mut types, 2)?;
+    let (mut output, payload_len) = encoder.finish()?;
+    let artifact_len = (HEADER_LEN as u64)
+        .checked_add(payload_len)
+        .ok_or(LzError::InvalidArtifact)?;
+    output.seek(SeekFrom::Start(0))?;
+    output.write_all(MAGIC)?;
+    output.write_all(&[0; 4])?;
+    output.write_all(&input_len.to_le_bytes())?;
+    output.write_all(&payload_len.to_le_bytes())?;
+    output.write_all(&crc.finish().to_le_bytes())?;
+    output.flush()?;
+
+    Ok(LzEncodeStats {
+        input_bytes: input_len,
+        payload_bytes: payload_len,
+        artifact_bytes: artifact_len,
+    })
 }
 
 /// Decodes a complete RFC 0014 research artifact.
@@ -354,6 +499,167 @@ fn ensure_remaining(position: usize, length: usize, output_len: usize) -> Result
     Ok(())
 }
 
+struct PageCache<R> {
+    input: R,
+    input_len: u64,
+    pages: Vec<CachedPage>,
+    tick: u64,
+}
+
+struct CachedPage {
+    index: u64,
+    bytes: Vec<u8>,
+    last_used: u64,
+}
+
+impl<R: Read + Seek> PageCache<R> {
+    fn new(input: R, input_len: u64) -> Self {
+        Self {
+            input,
+            input_len,
+            pages: Vec::with_capacity(INPUT_PAGE_COUNT),
+            tick: 0,
+        }
+    }
+
+    fn byte_at(&mut self, position: u64) -> io::Result<Option<u8>> {
+        if position >= self.input_len {
+            return Ok(None);
+        }
+        let page_index = position / INPUT_PAGE_LEN as u64;
+        let offset = usize::try_from(position % INPUT_PAGE_LEN as u64)
+            .map_err(|_| io::Error::other("TKLZ input page offset exceeds usize"))?;
+        self.tick = self.tick.wrapping_add(1);
+        if let Some(page) = self.pages.iter_mut().find(|page| page.index == page_index) {
+            page.last_used = self.tick;
+            return Ok(page.bytes.get(offset).copied());
+        }
+
+        let page = {
+            let start = page_index * INPUT_PAGE_LEN as u64;
+            let length = usize::try_from((self.input_len - start).min(INPUT_PAGE_LEN as u64))
+                .map_err(|_| io::Error::other("TKLZ input page length exceeds usize"))?;
+            let mut bytes = vec![0_u8; length];
+            self.input.seek(SeekFrom::Start(start))?;
+            self.input.read_exact(&mut bytes)?;
+            CachedPage {
+                index: page_index,
+                bytes,
+                last_used: self.tick,
+            }
+        };
+        if self.pages.len() < INPUT_PAGE_COUNT {
+            self.pages.push(page);
+        } else {
+            let oldest = self
+                .pages
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, page)| page.last_used)
+                .map(|(index, _)| index)
+                .expect("page cache is not empty");
+            self.pages[oldest] = page;
+        }
+        Ok(self
+            .pages
+            .iter()
+            .find(|page| page.index == page_index)
+            .and_then(|page| page.bytes.get(offset))
+            .copied())
+    }
+}
+
+fn key_at_stream<R: Read + Seek>(
+    input: &mut PageCache<R>,
+    position: u64,
+) -> Result<Option<u64>, LzStreamError> {
+    let mut bytes = [0_u8; MIN_MATCH];
+    for (offset, byte) in bytes.iter_mut().enumerate() {
+        let offset = u64::try_from(offset).map_err(|_| LzError::InvalidArtifact)?;
+        let Some(value) = input.byte_at(position + offset)? else {
+            return Ok(None);
+        };
+        *byte = value;
+    }
+    Ok(Some(u64::from_be_bytes(bytes)))
+}
+
+fn insert_stream<R: Read + Seek>(
+    input: &mut PageCache<R>,
+    position: u64,
+    table: &mut [Entry],
+) -> Result<(), LzStreamError> {
+    let Some(key) = key_at_stream(input, position)? else {
+        return Ok(());
+    };
+    table[table_index(key)] = Entry {
+        key,
+        position: u32::try_from(position).map_err(|_| LzError::InvalidArtifact)?,
+        occupied: true,
+    };
+    Ok(())
+}
+
+fn find_match_stream<R: Read + Seek>(
+    input: &mut PageCache<R>,
+    position: u64,
+    input_len: u64,
+    table: &[Entry],
+) -> Result<Option<(usize, usize)>, LzStreamError> {
+    let Some(key) = key_at_stream(input, position)? else {
+        return Ok(None);
+    };
+    let entry = table[table_index(key)];
+    if !entry.occupied || entry.key != key {
+        return Ok(None);
+    }
+    let candidate = u64::from(entry.position);
+    let Some(distance) = position
+        .checked_sub(candidate)
+        .filter(|&value| value != 0 && value <= MAX_DISTANCE_U64)
+    else {
+        return Ok(None);
+    };
+    let limit = usize::try_from((input_len - position).min(MAX_MATCH as u64))
+        .map_err(|_| LzError::InvalidArtifact)?;
+    let mut length = MIN_MATCH;
+    while length < limit {
+        let offset = u64::try_from(length).map_err(|_| LzError::InvalidArtifact)?;
+        if input.byte_at(candidate + offset)? != input.byte_at(position + offset)? {
+            break;
+        }
+        length += 1;
+    }
+    Ok(Some((
+        length,
+        usize::try_from(distance).map_err(|_| LzError::InvalidArtifact)?,
+    )))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_literal_stream<W: Write, R: Read + Seek>(
+    encoder: &mut StreamRangeEncoder<W>,
+    input: &mut PageCache<R>,
+    model: &mut Match8Model,
+    types: &mut AdaptiveDistribution,
+    literal_lengths: &mut AdaptiveDistribution,
+    start: u64,
+    length: usize,
+) -> Result<(), LzStreamError> {
+    encode_adaptive_streaming(encoder, types, 0)?;
+    encode_bucket_streaming(encoder, literal_lengths, length - 1)?;
+    for offset in 0..length {
+        let offset = u64::try_from(offset).map_err(|_| LzError::InvalidArtifact)?;
+        let byte = input
+            .byte_at(start + offset)?
+            .ok_or(LzError::InvalidArtifact)?;
+        let (low, high, total) = model.range(byte);
+        encoder.encode(low, high, total)?;
+        model.update(byte);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Default)]
 struct Entry {
     key: u64,
@@ -505,6 +811,17 @@ fn encode_adaptive(
     distribution.update(symbol);
 }
 
+fn encode_adaptive_streaming<W: Write>(
+    encoder: &mut StreamRangeEncoder<W>,
+    distribution: &mut AdaptiveDistribution,
+    symbol: usize,
+) -> io::Result<()> {
+    let (low, high, total) = distribution.range(symbol);
+    encoder.encode(low, high, total)?;
+    distribution.update(symbol);
+    Ok(())
+}
+
 fn decode_adaptive(
     decoder: &mut RangeDecoder<'_>,
     distribution: &mut AdaptiveDistribution,
@@ -530,6 +847,23 @@ fn encode_bucket(
     for shift in (0..bucket).rev() {
         encoder.encode_bit(((remainder >> shift) & 1) != 0);
     }
+}
+
+fn encode_bucket_streaming<W: Write>(
+    encoder: &mut StreamRangeEncoder<W>,
+    distribution: &mut AdaptiveDistribution,
+    value: usize,
+) -> io::Result<()> {
+    let shifted_value = value + 1;
+    let bucket = usize::try_from(usize::BITS - 1 - shifted_value.leading_zeros())
+        .expect("bucket fits usize");
+    encode_adaptive_streaming(encoder, distribution, bucket)?;
+    let base = (1_usize << bucket) - 1;
+    let remainder = value - base;
+    for shift in (0..bucket).rev() {
+        encoder.encode_bit(((remainder >> shift) & 1) != 0)?;
+    }
+    Ok(())
 }
 
 fn decode_bucket(
@@ -598,6 +932,61 @@ impl RangeEncoder {
         self.pending += 1;
         self.writer
             .bit_with_pending(self.low >= QUARTER, &mut self.pending);
+        self.writer.finish()
+    }
+}
+
+struct StreamRangeEncoder<W> {
+    writer: StreamBitWriter<W>,
+    low: u64,
+    high: u64,
+    pending: usize,
+}
+
+impl<W: Write> StreamRangeEncoder<W> {
+    fn new(output: W) -> Self {
+        Self {
+            writer: StreamBitWriter::new(output),
+            low: 0,
+            high: RANGE_MAX,
+            pending: 0,
+        }
+    }
+
+    fn encode(&mut self, cumulative_low: u32, cumulative_high: u32, total: u32) -> io::Result<()> {
+        debug_assert!(cumulative_low < cumulative_high && cumulative_high <= total);
+        let width = self.high - self.low + 1;
+        self.high = self.low + width * u64::from(cumulative_high) / u64::from(total) - 1;
+        self.low += width * u64::from(cumulative_low) / u64::from(total);
+        loop {
+            if self.high < HALF {
+                self.writer.bit_with_pending(false, &mut self.pending)?;
+            } else if self.low >= HALF {
+                self.writer.bit_with_pending(true, &mut self.pending)?;
+                self.low -= HALF;
+                self.high -= HALF;
+            } else if self.low >= QUARTER && self.high < THREE_QUARTERS {
+                self.pending += 1;
+                self.low -= QUARTER;
+                self.high -= QUARTER;
+            } else {
+                break;
+            }
+            self.low <<= 1;
+            self.high = (self.high << 1) | 1;
+        }
+        Ok(())
+    }
+
+    fn encode_bit(&mut self, bit: bool) -> io::Result<()> {
+        let low = u32::from(bit);
+        self.encode(low, low + 1, 2)
+    }
+
+    fn finish(mut self) -> io::Result<(W, u64)> {
+        self.pending += 1;
+        self.writer
+            .bit_with_pending(self.low >= QUARTER, &mut self.pending)?;
         self.writer.finish()
     }
 }
@@ -704,6 +1093,66 @@ impl BitWriter {
             self.bytes.push(self.current);
         }
         self.bytes
+    }
+}
+
+struct StreamBitWriter<W> {
+    output: W,
+    buffer: Vec<u8>,
+    current: u8,
+    used: u8,
+    bytes: u64,
+}
+
+impl<W: Write> StreamBitWriter<W> {
+    fn new(output: W) -> Self {
+        Self {
+            output,
+            buffer: Vec::with_capacity(INPUT_PAGE_LEN),
+            current: 0,
+            used: 0,
+            bytes: 0,
+        }
+    }
+
+    fn bit(&mut self, bit: bool) -> io::Result<()> {
+        self.current = (self.current << 1) | u8::from(bit);
+        self.used += 1;
+        if self.used == 8 {
+            self.buffer.push(self.current);
+            self.bytes += 1;
+            self.current = 0;
+            self.used = 0;
+            if self.buffer.len() == self.buffer.capacity() {
+                self.flush()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn bit_with_pending(&mut self, bit: bool, pending: &mut usize) -> io::Result<()> {
+        self.bit(bit)?;
+        for _ in 0..*pending {
+            self.bit(!bit)?;
+        }
+        *pending = 0;
+        Ok(())
+    }
+
+    fn finish(mut self) -> io::Result<(W, u64)> {
+        if self.used != 0 {
+            self.current <<= 8 - self.used;
+            self.buffer.push(self.current);
+            self.bytes += 1;
+        }
+        self.flush()?;
+        Ok((self.output, self.bytes))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.write_all(&self.buffer)?;
+        self.buffer.clear();
+        Ok(())
     }
 }
 
@@ -947,6 +1396,12 @@ impl Crc32 {
         }
     }
 
+    fn update_slice(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.update(byte);
+        }
+    }
+
     const fn finish(self) -> u32 {
         !self.0
     }
@@ -956,7 +1411,9 @@ impl Crc32 {
 mod tests {
     use std::io::Cursor;
 
-    use super::{LzError, decode_lz_artifact, decode_lz_stream, encode_lz_artifact};
+    use super::{
+        LzError, decode_lz_artifact, decode_lz_stream, encode_lz_artifact, encode_lz_stream,
+    };
     use crate::HEADER_LEN;
 
     #[test]
@@ -1015,5 +1472,25 @@ mod tests {
 
         let mut rejected = Vec::new();
         assert!(decode_lz_stream(Cursor::new(&artifact), &mut rejected, 1).is_err());
+    }
+
+    #[test]
+    fn streaming_encode_is_byte_identical() {
+        let cases = [
+            Vec::new(),
+            b"short input".to_vec(),
+            b"abcdefgh01234567abcdefgh01234567".repeat(5_000),
+        ];
+        for input in cases {
+            let expected = encode_lz_artifact(&input);
+            let mut output = Cursor::new(Vec::new());
+            let stats = encode_lz_stream(Cursor::new(&input), &mut output).unwrap();
+            assert_eq!(output.into_inner(), expected);
+            assert_eq!(stats.input_bytes, u64::try_from(input.len()).unwrap());
+            assert_eq!(stats.artifact_bytes, u64::try_from(expected.len()).unwrap());
+        }
+
+        let mut nonempty = Cursor::new(vec![0_u8]);
+        assert!(encode_lz_stream(Cursor::new(b"input"), &mut nonempty).is_err());
     }
 }

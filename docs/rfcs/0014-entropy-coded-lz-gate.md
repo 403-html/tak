@@ -1,6 +1,6 @@
 # RFC 0014: Entropy-coded LZ opportunity gate
 
-- Status: Development artifact and bounded decoder accepted
+- Status: Development artifact and bounded implementation accepted
 - Date: 2026-11-23
 - Scope: Classical research diagnostic only
 - Format change: None
@@ -163,13 +163,11 @@ gate. All 18 files restored exactly. Single-sample aggregate decode time was
 
 The artifact remains 83,605 bytes larger than Zstandard-19 and 118,818 bytes
 larger than xz. RFC 0010 is also 3,983 bytes smaller. Retain RFC 0014 as a
-research component, not the best-ratio profile. Controlled timing and a
-bounded streaming implementation are required before enwik9 evaluation.
+research component, not the best-ratio profile.
 
 Controlled Calgary timing used one warm-up and five measured repetitions.
 Median encode time was 0.74 times RFC 0009. Median decode time was 0.54 times
-RFC 0009. The timing gate passes. A bounded streaming implementation remains
-required before enwik9 evaluation.
+RFC 0009. The timing gate passes.
 
 ## 10. Bounded decoder
 
@@ -183,5 +181,20 @@ exact SHA-256 input, used 101,788 KiB peak RSS, and completed in 13.59 seconds.
 The artifact was 20,243,862 bytes. This is one screening run, not publishable
 timing.
 
-The bounded decoder gate passes. The encoder still retains the complete input,
-block list, and payload. A bounded encoder is required before enwik9 evaluation.
+## 11. Bounded encoder
+
+The bounded encoder reads a seekable input through four 64 KiB cached pages.
+It retains the fixed match table and probability models. It does not retain the
+complete input, parsed block list, or arithmetic payload. It writes the payload
+incrementally and patches the 28-byte header after the payload length is known.
+
+On the complete Mozilla file, the bounded encoder produced the byte-identical
+20,243,862-byte artifact. It used 68,768 KiB peak RSS and completed in 24.06
+seconds. The buffered candidate's internal encode measurement was 7.43 seconds,
+so the bounded implementation was 3.24 times slower. The buffered gate's
+294,192 KiB process peak includes RFC 0009 and both RFC 0014 operations; it is
+not an isolated encoder-memory measurement.
+
+The bounded implementation gate passes for correctness and memory. It does not
+pass the aspirational throughput target. Enwik9 evaluation is now permitted,
+but this reference encoder requires optimization before product use.

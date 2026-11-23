@@ -54,8 +54,8 @@ lengths, distances, premature end blocks, output-limit violations, checksum
 failures, and truncated artifacts.
 
 The match window is limited to 67,108,864 bytes. Match length is limited to
-65,535 bytes. This implementation retains the complete output in memory and
-is not yet the bounded streaming enwik9 path.
+65,535 bytes. The bounded command path retains neither the complete input nor
+the complete restored output.
 
 ## Raw results and environment
 
@@ -77,8 +77,31 @@ Raw data and digests are in
 `benchmarks/reports/raw/2026-11-23-lz-streaming-decoder.tsv`, SHA-256
 `62ac91cc403212817b887e2234b92d75721f4567e72f1dbc8d291be8e8397c00`.
 
-This passes the bounded decoder gate. It does not authorize enwik9 yet because
-the encoder still retains the complete input, parsed block list, and payload.
+## Bounded encoder screen
+
+The bounded encoder uses four 64 KiB cached input pages. It streams the
+arithmetic payload and patches the header after the payload length is known.
+It produced byte-identical artifacts in unit tests and for all Calgary files.
+The Calgary aggregate remained exactly 1,004,678 bytes with 18 exact round
+trips. This single screen used 41,632 KiB maximum encoder RSS.
+
+On Mozilla, bounded encoding produced the same 20,243,862-byte artifact and
+artifact SHA-256 as the buffered encoder. It took 24.06 seconds and used 68,768
+KiB peak RSS. Bounded decoding took 12.06 seconds and used 101,792 KiB. The
+buffered candidate's internal encode time was 7.43 seconds, so bounded encoding
+was 3.24 times slower. The buffered gate's 294,192 KiB process peak also
+includes RFC 0009 and decoding, so it is not an isolated memory control.
+
+Raw Calgary rows are in
+`benchmarks/reports/raw/2026-11-23-lz-bounded-encoder-calgary.tsv`, SHA-256
+`822203fb602f5fe975c04c38c0ac8bbdb7b6ed4ef63b4806ec2f019895a76c1d`.
+Mozilla rows are in
+`benchmarks/reports/raw/2026-11-23-lz-bounded-encoder-mozilla.tsv`, SHA-256
+`6bebdf5190e5d8ab92bc4b067f2d6226a829868c2a053c47543fbb6f277e13ea`.
+
+The bounded implementation gate passes for correctness and memory, not speed.
+It removes the enwik9 memory blocker. Optimize the page-cache path after the
+first enwik9 result establishes whether RFC 0014 has enough ratio value.
 
 - CPU: Intel Xeon Platinum 8573C, x86-64, three visible logical CPUs.
 - OS: Linux 6.18.57.
@@ -87,7 +110,7 @@ the encoder still retains the complete input, parsed block list, and payload.
 - Memory limit: none imposed.
 - Date: 2026-11-23 Europe/Warsaw.
 - Samples: one measured run per file without a warm-up.
-- Source: commit `fdc929d` plus the RFC 0014 artifact working tree.
+- Source: commit `3e410d9` plus the bounded-encoder working tree.
 
 ## Distance to project goals
 
@@ -104,4 +127,9 @@ python3 benchmarks/runners/measure.py \
   --timing /tmp/lz-book2-memory.tsv \
   --stdout /tmp/lz-book2.tsv \
   target/release/tak-lz-gate /tmp/tak-calgary/book2
+
+cargo build --release -p tak-tensor --bin tak-lz-stream
+target/release/tak-lz-stream encode input.bin output.tklz
+target/release/tak-lz-stream decode output.tklz restored.bin \
+  --max-output 1000000000
 ```
