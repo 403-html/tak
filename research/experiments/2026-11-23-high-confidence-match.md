@@ -1,9 +1,11 @@
-# Rejected screen: high-confidence exact match
+# Retained candidate, rejected target: high-confidence exact match
 
 ## Status
 
-Reject RFC 0010. A single predeclared divisor-1 screen improves RFC 0009 but
-does not beat Zstandard-19 or xz on Calgary.
+Retain the RFC 0010 artifact and its 2.80% gain as a high-compression research
+candidate. Reject only the explicit target of beating both Zstandard-19 and xz
+on Calgary. The candidate needs held-out validation before it can replace RFC
+0009 as the control.
 
 ## Result
 
@@ -25,7 +27,8 @@ result. It must remove 7.96% and 11.48% of its current bytes to equal them.
 ## Decision
 
 Stop confidence tuning. The fixed target required beating both external
-streams, and the candidate did neither. Preserve the negative result.
+streams, and the candidate did neither. Preserve both the improvement and the
+failed target.
 
 The next ratio experiment should test explicit match-run tokenization. That
 mechanism represents long repeated spans directly and is materially different

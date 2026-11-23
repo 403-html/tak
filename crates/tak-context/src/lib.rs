@@ -255,7 +255,9 @@ impl Match8Model {
         usize::try_from(index).expect("20-bit index fits usize")
     }
 
-    fn prediction(&self) -> Option<u8> {
+    /// Returns the current exact-match prediction, if its key is present.
+    #[must_use]
+    pub fn match_prediction(&self) -> Option<u8> {
         if self.seen < 8 {
             return None;
         }
@@ -273,7 +275,7 @@ impl Default for Match8Model {
 impl ByteModel for Match8Model {
     fn range(&self, symbol: u8) -> (u32, u32, u32) {
         let (mut low, mut high, total) = self.baseline.range(symbol);
-        let Some(prediction) = self.prediction() else {
+        let Some(prediction) = self.match_prediction() else {
             return (low, high, total);
         };
         let bonus = total / self.bonus_divisor.get();
@@ -289,7 +291,7 @@ impl ByteModel for Match8Model {
     }
 
     fn symbol(&self, value: u32) -> (u8, u32, u32, u32) {
-        let Some(prediction) = self.prediction() else {
+        let Some(prediction) = self.match_prediction() else {
             return self.baseline.symbol(value);
         };
         let (prediction_low, prediction_high, total) = self.baseline.range(prediction);
@@ -333,7 +335,7 @@ impl ByteModel for Match8Model {
         let total = self.baseline.total();
         total
             + self
-                .prediction()
+                .match_prediction()
                 .map_or(0, |_| total / self.bonus_divisor.get())
     }
 }

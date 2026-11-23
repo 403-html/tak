@@ -1,6 +1,6 @@
 # RFC 0010: High-confidence exact-match control
 
-- Status: Rejected
+- Status: Target rejected; candidate retained
 - Date: 2026-11-23
 - Scope: Classical research artifact only
 - TAK-C method identifier: None
@@ -47,14 +47,15 @@ tensor model. Increasing tensor rank does not address match confidence.
 
 ## 6. Decision
 
-Reject the mechanism. The divisor-1 artifact reduced RFC 0009 Calgary size by
+Reject the beat-both target but retain the candidate as a measured
+high-compression research profile. The divisor-1 artifact reduced RFC 0009 Calgary size by
 2.80%, from 1,029,480 to 1,000,695 bytes. It improved prose/reference by
 2.61%, technical/source by 4.78%, and binary by 1.89%. Every file restored
 exactly.
 
 The result remains 79,622 bytes larger than Zstandard-19 and 114,835 bytes
 larger than xz. It therefore fails the explicit target. Do not test more bonus
-divisors or promote `TKH8`.
+divisors or replace validated RFC 0009 with `TKH8` before held-out validation.
 
 The remaining opportunity is not match confidence alone. A later RFC may test
 explicit match-run tokens that represent a complete repeated span rather than

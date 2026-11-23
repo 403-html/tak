@@ -151,6 +151,13 @@ Zstandard targets. It reduced RFC 0009 by another 2.80% but stopped at
 The experiment is rejected; more bonus tuning is prohibited. A future ratio
 experiment must test a new mechanism such as explicit match-run tokens.
 
+RFC 0011 measured that match-run opportunity before defining another format.
+Runs of at least four bytes covered 30.45% of Calgary, but a raw marker plus
+LEB128 length was 26,921 bits worse than RFC 0009 on those bytes. Length-8 runs
+saved only 131,959 gross bits before control costs, far below the xz gap. The
+raw-token design is rejected; future work requires entropy-coded tokens or a
+genuine LZ parser rather than more match-weight tuning.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console
