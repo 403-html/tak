@@ -1,0 +1,4 @@
+record	operation	input_bytes	artifact_bytes	payload_bytes	wall_seconds	operation_seconds	throughput_mib_s	peak_rss_kib	roundtrip	sha256
+metadata	commit	d1e384a8ec16505e54d6c4fa1bf125d60666f09a	cpu	Intel Xeon Platinum 8573C	os	Linux 6.18.57	compiler	Rust 1.85.0 release	threads	1
+measurement	encode	1000000000	368643002	368642974	119.868727736	119.853376	7.955989	13216	unchecked	224b355de5ad1d5b25be848602c1de87c2c706b6ba4fee2fbbaa91b50c7cadea
+measurement	decode	1000000000	368643002	368642974	217.710083565	217.701320	4.380478	13216	true	159b85351e5f76e60cbe32e04c677847a9ecba3adc79addab6f4c6c7aa3744bc

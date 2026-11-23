@@ -8,7 +8,11 @@ mod second_order;
 mod third_order;
 mod third_order_backoff;
 
-pub use order2_normalized::{decode_order2_normalized_artifact, encode_order2_normalized_artifact};
+pub use order2_normalized::{
+    StreamArtifactError, StreamArtifactStats, decode_order2_normalized_artifact,
+    decode_order2_normalized_stream, encode_order2_normalized_artifact,
+    encode_order2_normalized_stream,
+};
 pub use order2_smoothing::{decode_order2_smoothed_artifact, encode_order2_smoothed_artifact};
 pub use second_order::{
     Order2TensorDiagnostics, QuantizedOrder2Model, decode_order2_tensor_artifact,

@@ -107,8 +107,16 @@ nominal 322,000,000-byte M1 target by 46,643,002 bytes and must remove 12.65%
 of its current bytes to reach M1. Same-input gzip produced 322,591,988 bytes,
 xz produced 215,674,196 bytes, and Zstandard level 19 produced 235,328,939
 bytes. TAK encoded at 8.10 MiB/s and decoded at 4.43 MiB/s in this single-run
-screen. The current non-streaming runner peaked at 3,665,840 KiB, so streaming
-and bounded-memory work are mandatory before codec promotion.
+screen. That non-streaming runner peaked at 3,665,840 KiB, which made streaming
+and bounded-memory work mandatory before codec promotion.
+
+RFC 0007 now provides a byte-identical bounded-memory path. Its enwik9 screen
+produced the same 368,643,002-byte complete size, encoded at 7.96 MiB/s,
+decoded at 4.38 MiB/s, and peaked at 13,216 KiB for each isolated process. The
+restored output matched all 1,000,000,000 input bytes. This fixes the prior
+memory failure but does not improve size or speed: TAK remains 46,643,002
+bytes above M1 and must remove 12.65% of its current artifact to reach that
+target.
 
 Reproduce the RFC 0002 tensor artifact with:
 
@@ -139,6 +147,15 @@ Run the preliminary RFC 0006 screen with:
 
 ```console
 cargo run --release -p tak-tensor --bin tak-order2-normalized-gate -- input.bin
+```
+
+Run its RFC 0007 bounded-memory artifact path with:
+
+```console
+cargo run --release -p tak-tensor --bin tak-order2-normalized-stream -- \
+  encode input.bin output.tkn2 --strength 4
+cargo run --release -p tak-tensor --bin tak-order2-normalized-stream -- \
+  decode output.tkn2 restored.bin --max-output 1000000000
 ```
 
 ## License
