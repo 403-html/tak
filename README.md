@@ -2,21 +2,26 @@
 
 <sub>For coding agents: <a href="AGENTS.md">project instructions</a>.</sub>
 
-TAK Pack is an experimental, lossless compression project. The research goal
-is to test whether compact tensor-network models can improve practical lossless
-compression. The project does not yet claim that they can.
+TAK is an experimental, lossless compression project written in Rust. It explores classical and **tensor-network-based** compression methods, with a focus on compression ratio, speed, and memory efficiency.
 
-The repository currently contains the Phase 1 classical control experiment:
+The current classical research model beats gzip -9 on Calgary and enwik9, but remains behind xz and Zstandard-19.
 
-- a deterministic integer arithmetic coder;
-- adaptive order-0 and order-1 byte models;
-- a research-only adaptive order-2 control;
-- a small, versioned experimental `.takc` stream;
-- exact round-trip and malformed-input tests; and
-- a benchmark command that reports size and wall-clock throughput.
+**Status**: _Experimental_. The best-performing model is not yet integrated into the main CLI. Formats are unstable and should not be used for long-term storage.
 
-The format is experimental and has no compatibility guarantee yet. Do not use
-it for durable storage.
+## Benchmarks
+
+### enwik9 (1 GB)
+
+| Compressor | Compressed size |
+|---|---:|
+| xz -9 | 215.67 MB |
+| Zstandard -19 | 235.33 MB |
+| **TAK (RFC 0009)** | **315.58 MB** |
+| gzip -9 | 322.59 MB |
+
+**TAK performance:** 6.54 MiB/s compression, 4.11 MiB/s decompression, approximately 29 MiB peak RSS. Exact SHA-256-verified restoration.
+
+[Full benchmark results](research/experiments/2026-11-23-enwik9-match8.md)
 
 ## Build
 
