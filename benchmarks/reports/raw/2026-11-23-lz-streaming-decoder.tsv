@@ -1,0 +1,2 @@
+dataset	input_bytes	artifact_bytes	decode_wall_seconds	peak_rss_kib	input_sha256	artifact_sha256	roundtrip
+mozilla-full	51220480	20243862	13.587295742	101788	657fc3764b0c75ac9de9623125705831ebbfbe08fed248df73bc2dc66e2a963b	1f77e4a7c7ebabe761673bd31dab2786ac45c51a0951fb63864cc34428572829	true

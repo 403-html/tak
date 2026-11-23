@@ -1,3 +1,6 @@
+use std::collections::VecDeque;
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
+
 use tak_context::{ByteModel, Match8Model};
 
 use crate::{HEADER_LEN, crc32, read_u64};
@@ -9,6 +12,7 @@ const HASH_MULTIPLIER: u64 = 0x9e37_79b9_7f4a_7c15;
 const MIN_MATCH: usize = 8;
 const MAX_MATCH: usize = 65_535;
 const MAX_DISTANCE: usize = 64 * 1024 * 1024;
+const MAX_DISTANCE_U64: u64 = 64 * 1024 * 1024;
 const MAX_TOTAL: u32 = 16_384;
 const RANGE_MAX: u64 = u32::MAX as u64;
 const HALF: u64 = 0x8000_0000;
@@ -40,6 +44,54 @@ impl std::fmt::Display for LzError {
 }
 
 impl std::error::Error for LzError {}
+
+/// Byte counts produced by bounded RFC 0014 streaming decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LzStreamStats {
+    /// Restored bytes written to the output.
+    pub output_bytes: u64,
+    /// Arithmetic payload bytes consumed from the artifact.
+    pub payload_bytes: u64,
+}
+
+/// Errors produced by bounded RFC 0014 streaming decode.
+#[derive(Debug)]
+pub enum LzStreamError {
+    /// The artifact is invalid.
+    Artifact(LzError),
+    /// Reading or writing failed.
+    Io(io::Error),
+}
+
+impl std::fmt::Display for LzStreamError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Artifact(error) => error.fmt(formatter),
+            Self::Io(error) => write!(formatter, "TKLZ stream I/O failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for LzStreamError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Artifact(error) => Some(error),
+            Self::Io(error) => Some(error),
+        }
+    }
+}
+
+impl From<io::Error> for LzStreamError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<LzError> for LzStreamError {
+    fn from(error: LzError) -> Self {
+        Self::Artifact(error)
+    }
+}
 
 /// Encodes a complete RFC 0014 research artifact.
 #[must_use]
@@ -172,6 +224,123 @@ pub fn decode_lz_artifact(artifact: &[u8], max_output: u64) -> Result<Vec<u8>, L
         return Err(LzError::ChecksumMismatch);
     }
     Ok(output)
+}
+
+/// Decodes an RFC 0014 artifact with bounded input and output buffers.
+///
+/// The decoder retains at most the 64 MiB match window plus a 64 KiB output
+/// buffer. It does not retain the complete artifact or restored output.
+///
+/// # Errors
+///
+/// Returns an error for I/O failure, invalid fields, excessive output, invalid
+/// arithmetic, invalid match extents, or a checksum mismatch.
+pub fn decode_lz_stream(
+    mut artifact: impl Read + Seek,
+    output: impl Write,
+    max_output: u64,
+) -> Result<LzStreamStats, LzStreamError> {
+    let artifact_len = artifact.seek(SeekFrom::End(0))?;
+    artifact.seek(SeekFrom::Start(0))?;
+    let mut header = [0_u8; HEADER_LEN];
+    artifact.read_exact(&mut header).map_err(|error| {
+        if error.kind() == io::ErrorKind::UnexpectedEof {
+            LzStreamError::Artifact(LzError::InvalidArtifact)
+        } else {
+            LzStreamError::Io(error)
+        }
+    })?;
+    if &header[..4] != MAGIC || header[4..8] != [0; 4] {
+        return Err(LzError::InvalidArtifact.into());
+    }
+    let output_len = read_u64(&header[8..16]);
+    if output_len > max_output {
+        return Err(LzError::OutputLimitExceeded.into());
+    }
+    let payload_len = read_u64(&header[16..24]);
+    if artifact_len
+        != 28_u64
+            .checked_add(payload_len)
+            .ok_or(LzError::InvalidArtifact)?
+    {
+        return Err(LzError::InvalidArtifact.into());
+    }
+    let expected_crc = u32::from_le_bytes([header[24], header[25], header[26], header[27]]);
+    let window_capacity =
+        usize::try_from(output_len.min(MAX_DISTANCE_U64)).map_err(|_| LzError::InvalidArtifact)?;
+    let mut restored = StreamOutput::new(output, window_capacity);
+    let mut decoder = StreamRangeDecoder::new(artifact.take(payload_len))?;
+    let mut model = Match8Model::new();
+    let mut types = AdaptiveDistribution::new(3);
+    let mut literal_lengths = AdaptiveDistribution::new(32);
+    let mut match_lengths = AdaptiveDistribution::new(32);
+    let mut distances = AdaptiveDistribution::new(32);
+
+    loop {
+        let block_type = decode_adaptive_stream(&mut decoder, &mut types)?;
+        match block_type {
+            0 => {
+                let encoded = decode_bucket_stream(&mut decoder, &mut literal_lengths)?;
+                let length = encoded.checked_add(1).ok_or(LzError::InvalidArtifact)?;
+                ensure_remaining_u64(restored.bytes, length, output_len)?;
+                for _ in 0..length {
+                    let scaled = decoder.scaled(model.total())?;
+                    let (byte, low, high, total) = model.symbol(scaled);
+                    decoder.advance(low, high, total)?;
+                    restored.push(byte)?;
+                    model.update(byte);
+                }
+            }
+            1 => {
+                let encoded_length = decode_bucket_stream(&mut decoder, &mut match_lengths)?;
+                let length = encoded_length
+                    .checked_add(MIN_MATCH)
+                    .filter(|&length| length <= MAX_MATCH)
+                    .ok_or(LzError::InvalidArtifact)?;
+                let encoded_distance = decode_bucket_stream(&mut decoder, &mut distances)?;
+                let distance = encoded_distance
+                    .checked_add(1)
+                    .filter(|&distance| {
+                        distance <= MAX_DISTANCE
+                            && u64::try_from(distance).is_ok_and(|value| value <= restored.bytes)
+                    })
+                    .ok_or(LzError::InvalidArtifact)?;
+                ensure_remaining_u64(restored.bytes, length, output_len)?;
+                for _ in 0..length {
+                    let byte = restored.match_byte(distance)?;
+                    restored.push(byte)?;
+                    model.update(byte);
+                }
+            }
+            2 => {
+                if restored.bytes != output_len {
+                    return Err(LzError::InvalidArtifact.into());
+                }
+                break;
+            }
+            _ => return Err(LzError::InvalidArtifact.into()),
+        }
+    }
+    let (bytes, actual_crc) = restored.finish()?;
+    if actual_crc != expected_crc {
+        return Err(LzError::ChecksumMismatch.into());
+    }
+    Ok(LzStreamStats {
+        output_bytes: bytes,
+        payload_bytes: payload_len,
+    })
+}
+
+fn ensure_remaining_u64(position: u64, length: usize, output_len: u64) -> Result<(), LzError> {
+    let length = u64::try_from(length).map_err(|_| LzError::InvalidArtifact)?;
+    if position
+        .checked_add(length)
+        .filter(|&end| end <= output_len)
+        .is_none()
+    {
+        return Err(LzError::InvalidArtifact);
+    }
+    Ok(())
 }
 
 fn ensure_remaining(position: usize, length: usize, output_len: usize) -> Result<(), LzError> {
@@ -559,9 +728,236 @@ impl<'a> BitReader<'a> {
     }
 }
 
+fn decode_adaptive_stream<R: Read>(
+    decoder: &mut StreamRangeDecoder<R>,
+    distribution: &mut AdaptiveDistribution,
+) -> Result<usize, LzStreamError> {
+    let scaled = decoder.scaled(distribution.total)?;
+    let (symbol, low, high, total) = distribution.symbol(scaled).ok_or(LzError::InvalidPayload)?;
+    decoder.advance(low, high, total)?;
+    distribution.update(symbol);
+    Ok(symbol)
+}
+
+fn decode_bucket_stream<R: Read>(
+    decoder: &mut StreamRangeDecoder<R>,
+    distribution: &mut AdaptiveDistribution,
+) -> Result<usize, LzStreamError> {
+    let bucket = decode_adaptive_stream(decoder, distribution)?;
+    if bucket >= 32 {
+        return Err(LzError::InvalidArtifact.into());
+    }
+    let base = (1_usize << bucket) - 1;
+    let mut remainder = 0_usize;
+    for _ in 0..bucket {
+        remainder = (remainder << 1) | usize::from(decoder.decode_bit()?);
+    }
+    base.checked_add(remainder)
+        .ok_or(LzStreamError::Artifact(LzError::InvalidArtifact))
+}
+
+struct StreamRangeDecoder<R> {
+    reader: StreamBitReader<R>,
+    low: u64,
+    high: u64,
+    code: u64,
+}
+
+impl<R: Read> StreamRangeDecoder<R> {
+    fn new(input: R) -> Result<Self, io::Error> {
+        let mut reader = StreamBitReader::new(input);
+        let mut code = 0;
+        for _ in 0..32 {
+            code = (code << 1) | u64::from(reader.bit()?);
+        }
+        Ok(Self {
+            reader,
+            low: 0,
+            high: RANGE_MAX,
+            code,
+        })
+    }
+
+    fn scaled(&self, total: u32) -> Result<u32, LzError> {
+        if total == 0 || self.code < self.low || self.code > self.high {
+            return Err(LzError::InvalidPayload);
+        }
+        let width = self.high - self.low + 1;
+        let scaled = ((self.code - self.low + 1) * u64::from(total) - 1) / width;
+        u32::try_from(scaled).map_err(|_| LzError::InvalidPayload)
+    }
+
+    fn advance(
+        &mut self,
+        cumulative_low: u32,
+        cumulative_high: u32,
+        total: u32,
+    ) -> Result<(), LzStreamError> {
+        if cumulative_low >= cumulative_high || cumulative_high > total {
+            return Err(LzError::InvalidPayload.into());
+        }
+        let width = self.high - self.low + 1;
+        self.high = self.low + width * u64::from(cumulative_high) / u64::from(total) - 1;
+        self.low += width * u64::from(cumulative_low) / u64::from(total);
+        loop {
+            if self.high < HALF {
+            } else if self.low >= HALF {
+                self.low -= HALF;
+                self.high -= HALF;
+                self.code -= HALF;
+            } else if self.low >= QUARTER && self.high < THREE_QUARTERS {
+                self.low -= QUARTER;
+                self.high -= QUARTER;
+                self.code -= QUARTER;
+            } else {
+                break;
+            }
+            self.low <<= 1;
+            self.high = (self.high << 1) | 1;
+            self.code = ((self.code << 1) & RANGE_MAX) | u64::from(self.reader.bit()?);
+        }
+        Ok(())
+    }
+
+    fn decode_bit(&mut self) -> Result<bool, LzStreamError> {
+        let scaled = self.scaled(2)?;
+        self.advance(scaled, scaled + 1, 2)?;
+        Ok(scaled != 0)
+    }
+}
+
+struct StreamBitReader<R> {
+    input: BufReader<R>,
+    current: u8,
+    remaining: u8,
+}
+
+impl<R: Read> StreamBitReader<R> {
+    fn new(input: R) -> Self {
+        Self {
+            input: BufReader::with_capacity(64 * 1024, input),
+            current: 0,
+            remaining: 0,
+        }
+    }
+
+    fn bit(&mut self) -> io::Result<u8> {
+        if self.remaining == 0 {
+            let mut byte = [0_u8; 1];
+            loop {
+                match self.input.read(&mut byte) {
+                    Ok(0) => {
+                        self.current = 0;
+                        break;
+                    }
+                    Ok(_) => {
+                        self.current = byte[0];
+                        break;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            self.remaining = 8;
+        }
+        let bit = (self.current >> (self.remaining - 1)) & 1;
+        self.remaining -= 1;
+        Ok(bit)
+    }
+}
+
+struct StreamOutput<W> {
+    output: W,
+    buffer: Vec<u8>,
+    window: VecDeque<u8>,
+    window_capacity: usize,
+    crc: Crc32,
+    bytes: u64,
+}
+
+impl<W: Write> StreamOutput<W> {
+    fn new(output: W, window_capacity: usize) -> Self {
+        Self {
+            output,
+            buffer: Vec::with_capacity(64 * 1024),
+            window: VecDeque::with_capacity(window_capacity),
+            window_capacity,
+            crc: Crc32::new(),
+            bytes: 0,
+        }
+    }
+
+    fn push(&mut self, byte: u8) -> io::Result<()> {
+        self.buffer.push(byte);
+        self.crc.update(byte);
+        if self.window.len() == self.window_capacity && self.window_capacity != 0 {
+            self.window.pop_front();
+        }
+        if self.window_capacity != 0 {
+            self.window.push_back(byte);
+        }
+        self.bytes = self
+            .bytes
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("TKLZ output length exceeds u64"))?;
+        if self.buffer.len() == self.buffer.capacity() {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn match_byte(&self, distance: usize) -> Result<u8, LzError> {
+        let index = self
+            .window
+            .len()
+            .checked_sub(distance)
+            .ok_or(LzError::InvalidArtifact)?;
+        self.window
+            .get(index)
+            .copied()
+            .ok_or(LzError::InvalidArtifact)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.write_all(&self.buffer)?;
+        self.buffer.clear();
+        Ok(())
+    }
+
+    fn finish(mut self) -> io::Result<(u64, u32)> {
+        self.flush()?;
+        self.output.flush()?;
+        Ok((self.bytes, self.crc.finish()))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Crc32(u32);
+
+impl Crc32 {
+    const fn new() -> Self {
+        Self(u32::MAX)
+    }
+
+    fn update(&mut self, byte: u8) {
+        self.0 ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = 0_u32.wrapping_sub(self.0 & 1);
+            self.0 = (self.0 >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+
+    const fn finish(self) -> u32 {
+        !self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{LzError, decode_lz_artifact, encode_lz_artifact};
+    use std::io::Cursor;
+
+    use super::{LzError, decode_lz_artifact, decode_lz_stream, encode_lz_artifact};
+    use crate::HEADER_LEN;
 
     #[test]
     fn artifacts_round_trip_short_and_repeated_inputs() {
@@ -597,5 +993,27 @@ mod tests {
             corrupt[index] ^= 0x40;
             assert!(decode_lz_artifact(&corrupt, u64::MAX).is_err());
         }
+    }
+
+    #[test]
+    fn streaming_decode_matches_buffered_decode() {
+        let input = b"abcdefgh01234567abcdefgh01234567".repeat(5_000);
+        let artifact = encode_lz_artifact(&input);
+        let mut output = Vec::new();
+        let stats = decode_lz_stream(
+            Cursor::new(&artifact),
+            &mut output,
+            u64::try_from(input.len()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(output, input);
+        assert_eq!(stats.output_bytes, u64::try_from(input.len()).unwrap());
+        assert_eq!(
+            stats.payload_bytes,
+            u64::try_from(artifact.len() - HEADER_LEN).unwrap()
+        );
+
+        let mut rejected = Vec::new();
+        assert!(decode_lz_stream(Cursor::new(&artifact), &mut rejected, 1).is_err());
     }
 }

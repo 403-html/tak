@@ -71,6 +71,10 @@ path = "src/lz_opportunity_main.rs"
 name = "tak-lz-gate"
 path = "src/lz_main.rs"
 
+[[bin]]
+name = "tak-lz-stream"
+path = "src/lz_stream_main.rs"
+
 [dependencies]
 tak-codecs = { path = "../tak-codecs" }
 tak-context = { path = "../tak-context" }

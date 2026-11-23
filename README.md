@@ -194,6 +194,14 @@ larger than retained RFC 0010, 83,605 bytes above Zstandard-19, and 118,818
 bytes above xz. Keep it as a fast classical research component, not a new
 compression-ratio record.
 
+Five controlled Calgary repetitions confirmed median encode and decode ratios
+of 0.74x and 0.54x versus RFC 0009. The next gate is bounded streaming; the
+buffered encoder still retains the complete input and payload.
+
+A bounded RFC 0014 decoder now restores through 64 KiB I/O buffers and a
+64 MiB match window. It restored the full 51,220,480-byte Mozilla input exactly
+with 101,788 KiB peak RSS. Bounded encoding remains required before enwik9.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console

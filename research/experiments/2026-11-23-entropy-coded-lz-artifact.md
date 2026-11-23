@@ -25,6 +25,13 @@ gate passes despite those regressions. Peak process RSS was 36,756 KiB.
 These are single-sample screening times without a warm-up. They are not
 publishable performance results. Artifact sizes and round trips are exact.
 
+Controlled timing then used one warm-up and five measured repetitions over all
+18 files. Median aggregate encode time was 0.423 seconds for RFC 0014 and 0.570
+seconds for RFC 0009, a 0.74x ratio. Median aggregate decode time was 0.411
+seconds versus 0.767, a 0.54x ratio. Every repetition produced identical sizes
+and exact round trips. Peak RSS ranged from 36,760 to 36,800 KiB in measured
+runs.
+
 ## Competitive position
 
 On the same independent-file Calgary accounting, `TKLZ` is:
@@ -55,6 +62,23 @@ is not yet the bounded streaming enwik9 path.
 Raw rows are in
 `benchmarks/reports/raw/2026-11-23-lz-artifact-calgary.tsv`, SHA-256
 `427ff03a0898f66c526e1b97aaffc91e0cef9ab7d969197a60e39f2cbf7bd438`.
+Controlled aggregate repetitions are in
+`benchmarks/reports/raw/2026-11-23-lz-artifact-controlled.tsv`, SHA-256
+`842e62beb130ac3afb29fa0cdd8d3fa0eb8d071dd6a014be658c05d9fc0a3d2c`.
+
+## Bounded decoder screen
+
+The bounded decoder retains a 64 MiB match window and 64 KiB input and output
+buffers instead of the complete output. On the full 51,220,480-byte Mozilla
+file it restored the exact input SHA-256, used 101,788 KiB peak RSS, and took
+13.59 seconds. The `TKLZ` artifact was 20,243,862 bytes.
+
+Raw data and digests are in
+`benchmarks/reports/raw/2026-11-23-lz-streaming-decoder.tsv`, SHA-256
+`62ac91cc403212817b887e2234b92d75721f4567e72f1dbc8d291be8e8397c00`.
+
+This passes the bounded decoder gate. It does not authorize enwik9 yet because
+the encoder still retains the complete input, parsed block list, and payload.
 
 - CPU: Intel Xeon Platinum 8573C, x86-64, three visible logical CPUs.
 - OS: Linux 6.18.57.

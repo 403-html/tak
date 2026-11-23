@@ -1,6 +1,6 @@
 # RFC 0014: Entropy-coded LZ opportunity gate
 
-- Status: Development artifact accepted
+- Status: Development artifact and bounded decoder accepted
 - Date: 2026-11-23
 - Scope: Classical research diagnostic only
 - Format change: None
@@ -165,3 +165,23 @@ The artifact remains 83,605 bytes larger than Zstandard-19 and 118,818 bytes
 larger than xz. RFC 0010 is also 3,983 bytes smaller. Retain RFC 0014 as a
 research component, not the best-ratio profile. Controlled timing and a
 bounded streaming implementation are required before enwik9 evaluation.
+
+Controlled Calgary timing used one warm-up and five measured repetitions.
+Median encode time was 0.74 times RFC 0009. Median decode time was 0.54 times
+RFC 0009. The timing gate passes. A bounded streaming implementation remains
+required before enwik9 evaluation.
+
+## 10. Bounded decoder
+
+The bounded decoder reads the arithmetic payload through a 64 KiB input
+buffer. It writes restored bytes through a 64 KiB output buffer and retains at
+most the last 67,108,864 restored bytes for match copies. It produces the same
+bytes and checksum result as the buffered decoder.
+
+On the complete 51,220,480-byte Mozilla file, the bounded decoder restored the
+exact SHA-256 input, used 101,788 KiB peak RSS, and completed in 13.59 seconds.
+The artifact was 20,243,862 bytes. This is one screening run, not publishable
+timing.
+
+The bounded decoder gate passes. The encoder still retains the complete input,
+block list, and payload. A bounded encoder is required before enwik9 evaluation.
