@@ -4,8 +4,8 @@ use std::path::Path;
 use std::{env, process::ExitCode};
 
 use tak_tensor::{
-    decode_lz_stream, encode_lz_priced_artifact, encode_lz_priced_stream, encode_lz_stream,
-    encode_lz_two_candidate_stream,
+    decode_lz_phase_stream, decode_lz_stream, encode_lz_phase_stream, encode_lz_priced_artifact,
+    encode_lz_priced_stream, encode_lz_stream, encode_lz_two_candidate_stream,
 };
 
 fn main() -> ExitCode {
@@ -27,6 +27,7 @@ fn run() -> Result<(), String> {
         [command, input, output] if command == "encode-priced-bounded" => {
             encode_priced_bounded(input, output)
         }
+        [command, input, output] if command == "encode-phase" => encode_phase(input, output),
         [command, input, output, option, limit]
             if command == "decode" && option == "--max-output" =>
         {
@@ -35,9 +36,17 @@ fn run() -> Result<(), String> {
                 .map_err(|_| "max-output must be a nonnegative integer")?;
             decode(input, output, limit)
         }
+        [command, input, output, option, limit]
+            if command == "decode-phase" && option == "--max-output" =>
+        {
+            let limit = limit
+                .parse::<u64>()
+                .map_err(|_| "max-output must be a nonnegative integer")?;
+            decode_phase(input, output, limit)
+        }
         _ => {
             Err(
-                "expected encode INPUT OUTPUT, encode-two INPUT OUTPUT, encode-priced INPUT OUTPUT, encode-priced-bounded INPUT OUTPUT, or decode INPUT OUTPUT --max-output BYTES"
+                "expected encode INPUT OUTPUT, encode-two INPUT OUTPUT, encode-priced INPUT OUTPUT, encode-priced-bounded INPUT OUTPUT, encode-phase INPUT OUTPUT, decode INPUT OUTPUT --max-output BYTES, or decode-phase INPUT OUTPUT --max-output BYTES"
                     .to_owned(),
             )
         }
@@ -85,11 +94,29 @@ fn encode(input: &str, output: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+fn encode_phase(input: &str, output: &str) -> Result<(), String> {
+    require_new_output(output)?;
+    let input = File::open(input).map_err(|error| error.to_string())?;
+    let output = create_new(output)?;
+    encode_lz_phase_stream(input, output)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 fn decode(input: &str, output: &str, max_output: u64) -> Result<(), String> {
     require_new_output(output)?;
     let input = File::open(input).map_err(|error| error.to_string())?;
     let output = create_new(output)?;
     decode_lz_stream(input, output, max_output)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn decode_phase(input: &str, output: &str, max_output: u64) -> Result<(), String> {
+    require_new_output(output)?;
+    let input = File::open(input).map_err(|error| error.to_string())?;
+    let output = create_new(output)?;
+    decode_lz_phase_stream(input, output, max_output)
         .map(|_| ())
         .map_err(|error| error.to_string())
 }

@@ -303,6 +303,24 @@ impl Match8Model {
         let entry = self.table[Self::index(self.history)];
         (entry.occupied && entry.key == self.history).then_some(entry.continuation)
     }
+
+    /// Returns the RFC 0006 baseline range before the exact-match bonus.
+    #[must_use]
+    pub fn baseline_range(&self, symbol: u8) -> (u32, u32, u32) {
+        self.baseline.range(symbol)
+    }
+
+    /// Decodes one value with the RFC 0006 baseline before the match bonus.
+    #[must_use]
+    pub fn baseline_symbol(&self, value: u32) -> (u8, u32, u32, u32) {
+        self.baseline.symbol(value)
+    }
+
+    /// Returns the RFC 0006 baseline total before the match bonus.
+    #[must_use]
+    pub fn baseline_total(&self) -> u32 {
+        self.baseline.total()
+    }
 }
 
 impl Default for Match8Model {

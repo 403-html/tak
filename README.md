@@ -16,14 +16,14 @@ The current classical research model beats gzip -9 on Calgary and enwik9, but re
 |---|---:|
 | xz -9 | 215.67 MB |
 | Zstandard -19 | 235.33 MB |
-| **TAK (RFC 0016)** | **251.98 MB** |
+| **TAK (RFC 0017)** | **251.70 MB** |
 | gzip -9 | 322.59 MB |
 
-**TAK performance:** 1.84 MB/s compression with 220,968 KiB peak RSS and
-8.95 MB/s decompression with 96,064 KiB peak RSS. Exact SHA-256-verified
+**TAK performance:** 1.81 MB/s compression with 220,796 KiB peak RSS and
+9.27 MB/s decompression with 96,064 KiB peak RSS. Exact SHA-256-verified
 restoration. This bounded reference path prioritizes evidence over speed.
 
-[Full benchmark results](research/experiments/2026-11-23-price-based-lz-parser.md)
+[Full benchmark results](research/experiments/2026-11-24-literal-phase-match-reliability.md)
 
 ## Build
 
@@ -241,6 +241,20 @@ restored all one billion bytes exactly. This is 24,360,559 bytes, or 8.82%,
 smaller than RFC 0015. It beats M1 by 70,021,511 bytes, but remains 16,649,550
 bytes above Zstandard-19, 36,304,293 bytes above xz, and 54,978,489 bytes
 above M2. Encoding reached 1.84 MB/s and decoding reached 8.95 MB/s.
+
+RFC 0017 measures a specific longer-context dependency that the rejected
+bigram tensor cannot represent: exact-suffix match reliability changes with
+the decoder-known offset inside a literal block. Four six-expert integer
+mixtures improve all five Silesia development tails and three previously
+unused held-out tails. A tensor is not useful for only 24 integer weights.
+
+The bounded RFC 0017 enwik9 artifact is 251,698,380 bytes, 280,109 bytes or
+0.111% smaller than RFC 0016. It restores all one billion bytes exactly. It
+beats M1 by 70,301,620 bytes but remains 16,369,441 bytes above Zstandard-19,
+36,024,184 bytes above xz, and 54,698,380 bytes above M2. Matching xz requires
+a further 14.31% reduction from the current artifact. Encoding reached 1.81
+MB/s and decoding reached 9.27 MB/s. Do not add phase bins or experts without
+a new held-out opportunity result.
 
 Reproduce the RFC 0002 tensor artifact with:
 
