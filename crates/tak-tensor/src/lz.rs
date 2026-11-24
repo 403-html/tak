@@ -92,6 +92,14 @@ pub struct LzPricedResidualProfile {
     pub global_remainder_model_bits: f64,
     /// Ideal remainder cost from adaptive models keyed by bucket and bit position.
     pub bucket_remainder_model_bits: f64,
+    /// Nonoverlapping profitable 3-to-7-byte match opportunities in literal blocks.
+    pub short_match_events: usize,
+    /// Literal bytes covered by selected short-match opportunities.
+    pub short_match_bytes: usize,
+    /// RFC 0017 literal bits covered by selected short-match opportunities.
+    pub short_match_literal_bits: f64,
+    /// Estimated type, length, and distance bits for selected short matches.
+    pub short_match_token_bits: f64,
     /// Matches that repeat the immediately preceding distance.
     pub repeat0_matches: usize,
     /// Distance bits used by immediately repeated distances.
@@ -258,6 +266,7 @@ pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
         input_bytes: input.len(),
         ..LzPricedResidualProfile::default()
     };
+    profile_short_matches(input, &blocks, &mut result);
     let mut distances = AdaptiveDistribution::new(32);
     let mut remainder_models = DistanceRemainderModels::new();
     let mut recent = Vec::with_capacity(REPEAT_SLOTS);
@@ -358,6 +367,117 @@ pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
 struct DistanceRemainderModels {
     global: Vec<AdaptiveDistribution>,
     by_bucket: Vec<AdaptiveDistribution>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ShortEntry {
+    key: u32,
+    position: u32,
+    occupied: bool,
+}
+
+fn profile_short_matches(input: &[u8], blocks: &[Block], result: &mut LzPricedResidualProfile) {
+    let literal_costs = rfc0017_literal_costs(input, blocks);
+    let mut table = vec![ShortEntry::default(); TABLE_LEN];
+    let mut position = 0;
+    for &block in blocks {
+        let literal_end = match block {
+            Block::Literal { length, .. } | Block::Match { length, .. } => position + length,
+        };
+        let mut selected_until = position;
+        while position < literal_end {
+            let is_literal = matches!(block, Block::Literal { .. });
+            if is_literal && position >= selected_until {
+                if let Some((length, distance)) = short_match(input, position, literal_end, &table)
+                {
+                    let literal_bits: f64 = literal_costs[position..position + length].iter().sum();
+                    let token_bits = 5.0 + f64::from(distance.ilog2());
+                    if literal_bits > token_bits {
+                        result.short_match_events += 1;
+                        result.short_match_bytes += length;
+                        result.short_match_literal_bits += literal_bits;
+                        result.short_match_token_bits += token_bits;
+                        selected_until = position + length;
+                    }
+                }
+            }
+            insert_short(input, position, &mut table);
+            position += 1;
+        }
+    }
+}
+
+fn rfc0017_literal_costs(input: &[u8], blocks: &[Block]) -> Vec<f64> {
+    let mut costs = vec![0.0; input.len()];
+    let mut model = PhaseMatchModel::new();
+    let mut position = 0;
+    for &block in blocks {
+        match block {
+            Block::Literal { length, .. } => {
+                for offset in 0..length {
+                    model.set_phase(Some(literal_phase(offset)));
+                    let byte = input[position];
+                    let (low, high, total) = model.range(byte);
+                    costs[position] = f64::from(total).log2() - f64::from(high - low).log2();
+                    model.update(byte);
+                    position += 1;
+                }
+            }
+            Block::Match { length, .. } => {
+                model.set_phase(None);
+                for &byte in &input[position..position + length] {
+                    model.update(byte);
+                }
+                position += length;
+            }
+        }
+    }
+    costs
+}
+
+fn short_match(
+    input: &[u8],
+    position: usize,
+    literal_end: usize,
+    table: &[ShortEntry],
+) -> Option<(usize, usize)> {
+    let key = short_key(input, position)?;
+    let entry = table[short_table_index(key)];
+    if !entry.occupied || entry.key != key {
+        return None;
+    }
+    let source = usize::try_from(entry.position).ok()?;
+    let distance = position.checked_sub(source)?;
+    if distance == 0 || distance > MAX_DISTANCE {
+        return None;
+    }
+    let limit = 7.min(literal_end - position);
+    let mut length = 3;
+    while length < limit && input[source + length] == input[position + length] {
+        length += 1;
+    }
+    Some((length, distance))
+}
+
+fn insert_short(input: &[u8], position: usize, table: &mut [ShortEntry]) {
+    let Some(key) = short_key(input, position) else {
+        return;
+    };
+    table[short_table_index(key)] = ShortEntry {
+        key,
+        position: u32::try_from(position).expect("input is bounded to u32"),
+        occupied: true,
+    };
+}
+
+fn short_key(input: &[u8], position: usize) -> Option<u32> {
+    let bytes = input.get(position..position + 3)?;
+    Some((u32::from(bytes[0]) << 16) | (u32::from(bytes[1]) << 8) | u32::from(bytes[2]))
+}
+
+fn short_table_index(key: u32) -> usize {
+    usize::try_from(key.wrapping_mul(0x9e37_79b9) >> (32 - TABLE_BITS))
+        .expect("20-bit index fits usize")
 }
 
 impl DistanceRemainderModels {
@@ -2555,6 +2675,15 @@ mod tests {
         assert!(profile.global_remainder_model_bits.is_finite());
         assert!(profile.bucket_remainder_model_bits.is_finite());
         assert!(profile.exclusion_saved_bits.is_finite());
+    }
+
+    #[test]
+    fn priced_residual_profile_finds_short_literal_matches() {
+        let input = b"abcXabcYabcZabcQabcRabcS".repeat(200);
+        let profile = profile_lz_priced_residual(&input);
+        assert!(profile.short_match_events > 0);
+        assert!(profile.short_match_bytes >= profile.short_match_events * 3);
+        assert!(profile.short_match_literal_bits > profile.short_match_token_bits);
     }
 
     #[test]

@@ -263,6 +263,13 @@ just 3 of 18 Calgary files. Even a zero-overhead per-file oracle can remove
 only about 2.1 KB, or 3.3% of the Calgary xz gap. The mechanism is rejected;
 do not add mixtures, more contexts, or a tensor for distance remainders.
 
+RFC 0018 identifies a larger classical opportunity: exact 3-to-7-byte matches
+inside RFC 0017 literal blocks. An optimistic cost model improves all five
+Silesia tails and all 18 Calgary files. Its Calgary bound is about 59.2 KB, or
+91.2% of the RFC 0016-to-xz gap. This is not a compressed-size result. A new
+short-match research artifact must retain at least 30 KB on Calgary under
+complete accounting before any bounded enwik9 run.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console
