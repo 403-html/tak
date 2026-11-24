@@ -183,6 +183,23 @@ pub struct LiteralPhaseOrder2Profile {
     pub candidate_bits_by_phase: [f64; 4],
 }
 
+/// Ideal-bit diagnostic for RFC 0023's match-distance literal continuation.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct MatchDistanceLiteralProfile {
+    /// Number of bytes in the complete input.
+    pub input_bytes: usize,
+    /// Number of bytes coded as literals by the RFC 0019 parse.
+    pub literal_bytes: usize,
+    /// Literal events with an available preceding-distance source byte.
+    pub eligible_literals: usize,
+    /// Eligible events where the source byte equals the literal.
+    pub source_hits: usize,
+    /// Ideal bits from the complete RFC 0019 literal model.
+    pub control_bits: f64,
+    /// Ideal bits after the source-byte expert mixture.
+    pub candidate_bits: f64,
+}
+
 /// Errors produced by bounded RFC 0014 streaming decode.
 #[derive(Debug)]
 pub enum LzStreamError {
@@ -504,6 +521,57 @@ pub fn profile_literal_phase_order2(input: &[u8]) -> LiteralPhaseOrder2Profile {
                     }
                 }
                 position += length;
+            }
+        }
+    }
+    debug_assert_eq!(position, input.len());
+    result
+}
+
+/// Profiles RFC 0023's match-distance source on the RFC 0019 parse.
+#[must_use]
+pub fn profile_match_distance_literal(input: &[u8]) -> MatchDistanceLiteralProfile {
+    let blocks = priced::parse_priced(input);
+    let mut control = PhaseMatchModel::new();
+    let mut mixture = ExpertMixture::new();
+    let mut result = MatchDistanceLiteralProfile {
+        input_bytes: input.len(),
+        ..MatchDistanceLiteralProfile::default()
+    };
+    let mut previous_distance = None;
+    let mut position = 0;
+
+    for block in blocks {
+        match block {
+            Block::Literal { start, length } => {
+                debug_assert_eq!(start, position);
+                for (offset, &byte) in input[start..start + length].iter().enumerate() {
+                    control.set_phase(Some(literal_phase(offset)));
+                    let (low, high, total) = control.range(byte);
+                    let width = high - low;
+                    let control_bits = f64::from(total).log2() - f64::from(width).log2();
+                    let candidate_bits = previous_distance
+                        .and_then(|distance| position.checked_sub(distance))
+                        .map_or(control_bits, |source| {
+                            let hit = input[source] == byte;
+                            result.eligible_literals += 1;
+                            result.source_hits += usize::from(hit);
+                            mixture.code(expert_probabilities(width, total, hit))
+                        });
+                    result.literal_bytes += 1;
+                    result.control_bits += control_bits;
+                    result.candidate_bits += candidate_bits;
+                    control.update(byte);
+                    position += 1;
+                }
+            }
+            Block::Match { length, distance } => {
+                control.set_phase(None);
+                for &byte in &input[position..position + length] {
+                    control.update(byte);
+                }
+                position += length;
+                previous_distance = Some(distance);
             }
         }
     }
@@ -3179,7 +3247,7 @@ mod tests {
         encode_lz_structural_artifact, encode_lz_structural_repriced_artifact,
         encode_lz_structural_stream, encode_lz_two_candidate_artifact,
         encode_lz_two_candidate_stream, literal_phase, profile_literal_phase_order2,
-        profile_lz_priced_residual, short_match,
+        profile_lz_priced_residual, profile_match_distance_literal, short_match,
     };
     use crate::HEADER_LEN;
 
@@ -3509,6 +3577,19 @@ mod tests {
         assert!(profile.candidate_bits.is_finite());
         assert!(profile.control_bits > 0.0);
         assert!(profile.candidate_bits > 0.0);
+        assert!((profile.control_bits - established.integer_phase_literal_bits).abs() < 1e-6);
+    }
+
+    #[test]
+    fn match_distance_literal_profile_uses_established_control() {
+        let input = b"abcdefghXabcdefghYabcdefghZ".repeat(1_000);
+        let profile = profile_match_distance_literal(&input);
+        let established = profile_lz_priced_residual(&input);
+        assert_eq!(profile.input_bytes, input.len());
+        assert_eq!(profile.literal_bytes, established.literal_bytes);
+        assert!(profile.eligible_literals != 0);
+        assert!(profile.source_hits <= profile.eligible_literals);
+        assert!(profile.candidate_bits.is_finite());
         assert!((profile.control_bits - established.integer_phase_literal_bits).abs() < 1e-6);
     }
 

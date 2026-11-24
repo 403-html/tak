@@ -107,6 +107,10 @@ path = "src/lz_repriced_main.rs"
 name = "tak-literal-phase-order2"
 path = "src/literal_phase_order2_main.rs"
 
+[[bin]]
+name = "tak-match-distance-literal"
+path = "src/match_distance_literal_main.rs"
+
 [dependencies]
 tak-codecs = { path = "../tak-codecs" }
 tak-context = { path = "../tak-context" }
