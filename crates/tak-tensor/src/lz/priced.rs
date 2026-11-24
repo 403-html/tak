@@ -41,8 +41,19 @@ impl Prices {
         self.types[0] + self.literal_lengths[0]
     }
 
-    fn match_cost(&self, length: usize, distance: usize) -> f64 {
-        self.types[1]
+    fn match_cost(
+        &self,
+        length: usize,
+        distance: usize,
+        from_literal: bool,
+        structural_types: bool,
+    ) -> f64 {
+        let type_cost = if structural_types && from_literal {
+            0.0
+        } else {
+            self.types[1]
+        };
+        type_cost
             + bucket_price(&self.match_lengths, length - MIN_MATCH)
             + bucket_price(&self.distances, distance - 1)
     }
@@ -68,6 +79,7 @@ fn bucket_price(prices: &[f64; SYMBOLS], value: usize) -> f64 {
 }
 
 struct CoderState {
+    structural_types: bool,
     types: AdaptiveDistribution,
     literal_lengths: AdaptiveDistribution,
     match_lengths: AdaptiveDistribution,
@@ -82,10 +94,11 @@ struct Emitter {
 }
 
 impl Emitter {
-    fn new() -> Self {
+    fn new(structural_types: bool) -> Self {
         Self {
             state: CoderState {
-                types: AdaptiveDistribution::new(3),
+                structural_types,
+                types: AdaptiveDistribution::new(if structural_types { 2 } else { 3 }),
                 literal_lengths: AdaptiveDistribution::new(SYMBOLS),
                 match_lengths: AdaptiveDistribution::new(SYMBOLS),
                 distances: AdaptiveDistribution::new(SYMBOLS),
@@ -120,8 +133,11 @@ impl Emitter {
     }
 
     fn matched(&mut self, length: usize, distance: usize) {
+        let follows_literal = self.literal_length != 0;
         self.flush_literal();
-        self.state.types.update(1);
+        if !self.state.structural_types || !follows_literal {
+            self.state.types.update(1);
+        }
         self.state
             .match_lengths
             .update(bucket_of(length - MIN_MATCH));
@@ -175,23 +191,43 @@ impl PricedInput for SliceInput<'_> {
 }
 
 pub(super) fn parse_priced(input: &[u8]) -> Vec<Block> {
+    parse_priced_mode(input, false)
+}
+
+pub(super) fn parse_priced_structural(input: &[u8]) -> Vec<Block> {
+    parse_priced_mode(input, true)
+}
+
+fn parse_priced_mode(input: &[u8], structural_types: bool) -> Vec<Block> {
     let mut blocks = Vec::new();
-    parse_priced_with(&mut SliceInput(input), |_, block| {
-        blocks.push(block);
-        Ok(())
-    })
+    parse_priced_with_mode(
+        &mut SliceInput(input),
+        |_, block| {
+            blocks.push(block);
+            Ok(())
+        },
+        structural_types,
+    )
     .expect("in-memory input cannot fail");
     blocks
 }
 
 pub(super) fn parse_priced_with<I: PricedInput>(
     input: &mut I,
+    sink: impl FnMut(&mut I, Block) -> Result<(), LzStreamError>,
+) -> Result<(), LzStreamError> {
+    parse_priced_with_mode(input, sink, false)
+}
+
+fn parse_priced_with_mode<I: PricedInput>(
+    input: &mut I,
     mut sink: impl FnMut(&mut I, Block) -> Result<(), LzStreamError>,
+    structural_types: bool,
 ) -> Result<(), LzStreamError> {
     let input_len = input.len();
     let mut table = vec![Entry::default(); TABLE_LEN];
     let mut model = Match8Model::new();
-    let mut emitter = Emitter::new();
+    let mut emitter = Emitter::new(structural_types);
     let mut candidates: Vec<[Candidate; 2]> = Vec::with_capacity(SEGMENT_LEN);
     let mut literal_bits: Vec<f64> = Vec::with_capacity(SEGMENT_LEN);
     let mut position = 0;
@@ -568,10 +604,7 @@ fn solve_segment(
     let mut match_cost = vec![f64::INFINITY; count + 1];
     let mut literal_step = vec![Step::Unreached; count + 1];
     let mut match_step = vec![Step::Unreached; count + 1];
-    match_cost[0] = 0.0;
-    if emitter.literal_length != 0 {
-        literal_cost[0] = 0.0;
-    }
+    initialize_segment_costs(emitter, &mut literal_cost, &mut match_cost);
     for index in 0..count {
         let bits = literal_bits[index];
         let continued = literal_cost[index] + bits;
@@ -601,7 +634,13 @@ fn solve_segment(
             let lengths =
                 (MIN_MATCH..=short_end).chain((available > short_end).then_some(available));
             for length in lengths {
-                let cost = base + prices.match_cost(length, distance);
+                let cost = base
+                    + prices.match_cost(
+                        length,
+                        distance,
+                        from_literal,
+                        emitter.state.structural_types,
+                    );
                 let end = index + length;
                 if cost < match_cost[end] {
                     match_cost[end] = cost;
@@ -641,6 +680,22 @@ fn solve_segment(
             Step::Unreached => unreachable!("every segment position is reachable by literals"),
         }
     }
+    let position = emit_path(start, path, emitter);
+    debug_assert_eq!(position, start + count);
+}
+
+fn initialize_segment_costs(emitter: &Emitter, literal_cost: &mut [f64], match_cost: &mut [f64]) {
+    if emitter.literal_length == 0 {
+        match_cost[0] = 0.0;
+    } else {
+        literal_cost[0] = 0.0;
+        if !emitter.state.structural_types {
+            match_cost[0] = 0.0;
+        }
+    }
+}
+
+fn emit_path(start: usize, path: Vec<Step>, emitter: &mut Emitter) -> usize {
     let mut position = start;
     for step in path.into_iter().rev() {
         match step {
@@ -657,7 +712,7 @@ fn solve_segment(
             Step::Unreached => unreachable!("path contains reached steps only"),
         }
     }
-    debug_assert_eq!(position, start + count);
+    position
 }
 
 #[cfg(test)]
@@ -665,7 +720,10 @@ mod tests {
     use std::io::Cursor;
 
     use super::super::{decode_lz_artifact, encode_lz_priced_artifact};
-    use super::{Block, encode_priced_stream, encode_priced_stream_with_ring, parse_priced};
+    use super::{
+        Block, encode_priced_stream, encode_priced_stream_with_ring, parse_priced,
+        parse_priced_structural,
+    };
 
     fn noise(length: usize, mut state: u64) -> Vec<u8> {
         (0..length)
@@ -732,17 +790,10 @@ mod tests {
             .sum()
     }
 
-    #[test]
-    fn priced_parse_covers_input_in_order() {
-        let mut input = Vec::new();
-        for round in 0..200_u32 {
-            input.extend_from_slice(b"the quick brown fox jumps over ");
-            input.extend_from_slice(&round.to_le_bytes());
-        }
-        let blocks = parse_priced(&input);
-        assert_eq!(covered(&blocks), input.len());
+    fn assert_valid_parse(input: &[u8], blocks: &[Block]) {
+        assert_eq!(covered(blocks), input.len());
         let mut position = 0;
-        for block in &blocks {
+        for block in blocks {
             match *block {
                 Block::Literal { start, length } => {
                     assert_eq!(start, position);
@@ -766,11 +817,24 @@ mod tests {
     }
 
     #[test]
+    fn priced_parses_cover_input_in_order() {
+        let mut input = Vec::new();
+        for round in 0..200_u32 {
+            input.extend_from_slice(b"the quick brown fox jumps over ");
+            input.extend_from_slice(&round.to_le_bytes());
+        }
+        assert_valid_parse(&input, &parse_priced(&input));
+        assert_valid_parse(&input, &parse_priced_structural(&input));
+    }
+
+    #[test]
     fn long_runs_cross_segments_and_nice_matches() {
         let mut input = vec![0_u8; 200_000];
         input.extend((0..100_000_u32).map(|value| (value.wrapping_mul(2_654_435_761) >> 24) as u8));
         input.extend_from_slice(&input.clone()[200_000..260_000]);
         let blocks = parse_priced(&input);
         assert_eq!(covered(&blocks), input.len());
+        let structural = parse_priced_structural(&input);
+        assert_eq!(covered(&structural), input.len());
     }
 }

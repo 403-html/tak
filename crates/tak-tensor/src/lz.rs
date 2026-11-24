@@ -250,6 +250,14 @@ pub fn encode_lz_structural_artifact(input: &[u8]) -> Vec<u8> {
     encode_structural_blocks(input, priced::parse_priced(input))
 }
 
+/// Encodes an RFC 0021 structurally repriced `TKT9` research artifact.
+///
+/// The decoder and artifact syntax are unchanged from RFC 0019.
+#[must_use]
+pub fn encode_lz_structural_repriced_artifact(input: &[u8]) -> Vec<u8> {
+    encode_structural_blocks(input, priced::parse_priced_structural(input))
+}
+
 /// Encodes an RFC 0016 price-based parser artifact with bounded memory.
 ///
 /// The artifact is byte-identical to [`encode_lz_priced_artifact`].
@@ -3042,9 +3050,9 @@ mod tests {
         decode_lz_stream, decode_lz_structural_artifact, decode_lz_structural_stream,
         encode_lz_artifact, encode_lz_phase_artifact, encode_lz_phase_stream,
         encode_lz_priced_artifact, encode_lz_short_artifact, encode_lz_stream,
-        encode_lz_structural_artifact, encode_lz_structural_stream,
-        encode_lz_two_candidate_artifact, encode_lz_two_candidate_stream, literal_phase,
-        profile_lz_priced_residual, short_match,
+        encode_lz_structural_artifact, encode_lz_structural_repriced_artifact,
+        encode_lz_structural_stream, encode_lz_two_candidate_artifact,
+        encode_lz_two_candidate_stream, literal_phase, profile_lz_priced_residual, short_match,
     };
     use crate::HEADER_LEN;
 
@@ -3208,6 +3216,21 @@ mod tests {
             );
             assert!(decode_lz_artifact(&artifact, u64::MAX).is_err());
             assert!(decode_lz_phase_artifact(&artifact, u64::MAX).is_err());
+        }
+    }
+
+    #[test]
+    fn structurally_repriced_artifact_uses_existing_decoder() {
+        for input in [
+            Vec::new(),
+            b"short".to_vec(),
+            b"abcdefghXabcdefghYabcdefghZ".repeat(2_000),
+        ] {
+            let artifact = encode_lz_structural_repriced_artifact(&input);
+            assert_eq!(
+                decode_lz_structural_artifact(&artifact, input.len() as u64).unwrap(),
+                input
+            );
         }
     }
 
