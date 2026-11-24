@@ -22,7 +22,7 @@ pub use lz::{
     encode_lz_structural_artifact, encode_lz_structural_repriced_artifact,
     encode_lz_structural_stream, encode_lz_two_candidate_artifact, encode_lz_two_candidate_stream,
     profile_length_conditioned_distance, profile_literal_only_counts, profile_literal_phase_order2,
-    profile_lz_priced_residual, profile_match_distance_literal,
+    profile_lz_priced_residual, profile_match_distance_literal, profile_short_suffix_backoff,
 };
 pub use match8::{
     decode_match8_artifact, decode_match8_stream, encode_match8_artifact, encode_match8_stream,
