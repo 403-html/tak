@@ -1,8 +1,9 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::num::NonZeroU16;
 
-use tak_context::{ByteModel, Match8Model};
+use tak_context::{ByteModel, Match8Model, Order2NormalizedModel};
 
 use crate::{HEADER_LEN, crc32, read_u64};
 
@@ -161,6 +162,25 @@ pub struct LzPricedResidualProfile {
     pub context_expert_literal_bits: f64,
     /// Ideal literal bits from the deterministic integer phase mixture.
     pub integer_phase_literal_bits: f64,
+}
+
+/// Ideal-bit diagnostic for RFC 0022's literal-phase order-2 dependency.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LiteralPhaseOrder2Profile {
+    /// Number of bytes in the complete input.
+    pub input_bytes: usize,
+    /// Number of bytes coded as literals by the RFC 0019 parse.
+    pub literal_bytes: usize,
+    /// Literal counts in RFC 0017's four phase buckets.
+    pub literal_bytes_by_phase: [usize; 4],
+    /// Ideal bits from the complete RFC 0019 literal model.
+    pub control_bits: f64,
+    /// Ideal bits from the RFC 0022 two-expert mixture.
+    pub candidate_bits: f64,
+    /// Control ideal bits in each literal phase.
+    pub control_bits_by_phase: [f64; 4],
+    /// Candidate ideal bits in each literal phase.
+    pub candidate_bits_by_phase: [f64; 4],
 }
 
 /// Errors produced by bounded RFC 0014 streaming decode.
@@ -418,6 +438,72 @@ pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
                     .checked_sub(distance)
                     .and_then(|source| input.get(source))
                     .copied();
+            }
+        }
+    }
+    debug_assert_eq!(position, input.len());
+    result
+}
+
+/// Profiles RFC 0022's phase-specific order-2 residual on the RFC 0019 parse.
+#[must_use]
+pub fn profile_literal_phase_order2(input: &[u8]) -> LiteralPhaseOrder2Profile {
+    let blocks = priced::parse_priced(input);
+    let strength = NonZeroU16::new(4).unwrap_or(NonZeroU16::MIN);
+    let mut phase_models: [Order2NormalizedModel; 4] =
+        std::array::from_fn(|_| Order2NormalizedModel::new(strength));
+    let mut mixtures = [TwoExpertMixture::new(); 4];
+    let mut control = PhaseMatchModel::new();
+    let mut result = LiteralPhaseOrder2Profile {
+        input_bytes: input.len(),
+        ..LiteralPhaseOrder2Profile::default()
+    };
+    let mut position = 0;
+
+    for block in blocks {
+        match block {
+            Block::Literal { start, length } => {
+                debug_assert_eq!(start, position);
+                for (offset, &byte) in input[start..start + length].iter().enumerate() {
+                    let phase = literal_phase(offset);
+                    control.set_phase(Some(phase));
+                    let (control_low, control_high, control_total) = control.range(byte);
+                    let control_probability =
+                        f64::from(control_high - control_low) / f64::from(control_total);
+                    let (phase_low, phase_high, phase_total) = phase_models[phase].range(byte);
+                    let phase_probability =
+                        f64::from(phase_high - phase_low) / f64::from(phase_total);
+                    let control_bits = -control_probability.log2();
+                    let candidate_bits =
+                        mixtures[phase].code([control_probability, phase_probability]);
+
+                    result.literal_bytes += 1;
+                    result.literal_bytes_by_phase[phase] += 1;
+                    result.control_bits += control_bits;
+                    result.candidate_bits += candidate_bits;
+                    result.control_bits_by_phase[phase] += control_bits;
+                    result.candidate_bits_by_phase[phase] += candidate_bits;
+
+                    control.update(byte);
+                    for (index, model) in phase_models.iter_mut().enumerate() {
+                        if index == phase {
+                            model.update(byte);
+                        } else {
+                            model.observe(byte);
+                        }
+                    }
+                    position += 1;
+                }
+            }
+            Block::Match { length, .. } => {
+                control.set_phase(None);
+                for &byte in &input[position..position + length] {
+                    control.update(byte);
+                    for model in &mut phase_models {
+                        model.observe(byte);
+                    }
+                }
+                position += length;
             }
         }
     }
@@ -791,6 +877,46 @@ impl ExpertMixture {
             .map(|(weight, expert)| weight * expert)
             .sum::<f64>()
             / weight_total;
+        for (weight, expert) in self.log_weights.iter_mut().zip(probabilities) {
+            *weight += expert.ln();
+        }
+        let updated_maximum = self
+            .log_weights
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        for weight in &mut self.log_weights {
+            *weight -= updated_maximum;
+        }
+        -probability.log2()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TwoExpertMixture {
+    log_weights: [f64; 2],
+}
+
+impl TwoExpertMixture {
+    const fn new() -> Self {
+        Self {
+            log_weights: [0.0; 2],
+        }
+    }
+
+    fn code(&mut self, probabilities: [f64; 2]) -> f64 {
+        let maximum = self
+            .log_weights
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let weights = self.log_weights.map(|weight| (weight - maximum).exp());
+        let probability = weights
+            .iter()
+            .zip(probabilities)
+            .map(|(weight, expert)| weight * expert)
+            .sum::<f64>()
+            / weights.iter().sum::<f64>();
         for (weight, expert) in self.log_weights.iter_mut().zip(probabilities) {
             *weight += expert.ln();
         }
@@ -3052,7 +3178,8 @@ mod tests {
         encode_lz_priced_artifact, encode_lz_short_artifact, encode_lz_stream,
         encode_lz_structural_artifact, encode_lz_structural_repriced_artifact,
         encode_lz_structural_stream, encode_lz_two_candidate_artifact,
-        encode_lz_two_candidate_stream, literal_phase, profile_lz_priced_residual, short_match,
+        encode_lz_two_candidate_stream, literal_phase, profile_literal_phase_order2,
+        profile_lz_priced_residual, short_match,
     };
     use crate::HEADER_LEN;
 
@@ -3365,6 +3492,24 @@ mod tests {
         assert!(profile.global_remainder_model_bits.is_finite());
         assert!(profile.bucket_remainder_model_bits.is_finite());
         assert!(profile.exclusion_saved_bits.is_finite());
+    }
+
+    #[test]
+    fn literal_phase_order2_profile_covers_literal_parse() {
+        let input = b"abcdefghXabcdefghYabcdefghZ".repeat(1_000);
+        let profile = profile_literal_phase_order2(&input);
+        let established = profile_lz_priced_residual(&input);
+        assert_eq!(profile.input_bytes, input.len());
+        assert_eq!(
+            profile.literal_bytes_by_phase.iter().sum::<usize>(),
+            profile.literal_bytes
+        );
+        assert!(profile.literal_bytes != 0);
+        assert!(profile.control_bits.is_finite());
+        assert!(profile.candidate_bits.is_finite());
+        assert!(profile.control_bits > 0.0);
+        assert!(profile.candidate_bits > 0.0);
+        assert!((profile.control_bits - established.integer_phase_literal_bits).abs() < 1e-6);
     }
 
     #[test]
