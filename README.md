@@ -191,11 +191,14 @@ exact-suffix control's 0.4979. This permits a new untied position-aware tensor
 design with both classical models as mandatory controls. It is not yet a
 tensor or compressed-size improvement.
 
-RFC 0027 pre-registers the next tensor test. It fixes rank at two and compares
-a compact position-modulated MPS with fully untied position cores. Both must
-beat the sparse exact-suffix and position-specific classical controls after
-quantization and complete core metadata. This is a representation test, not a
-claim that tensors improve arbitrary binary data.
+RFC 0027 tested that position dependency directly at fixed rank two. Fully
+untied cores beat the shared tensor on Dickens, XML, and OOffice, with weighted
+loss falling from 0.5908 to 0.5645 bits per event. The position-specific
+classical control remained stronger at 0.4674. The compact position-modulated
+tensor did not retain the untied gain, and metadata made both candidates much
+worse. The exact representations are rejected without testing higher rank or
+tuning the optimizer. This does not rule out other tensor topologies or
+higher-order interactions.
 
 RFC 0014 returns to a classical entropy-coded LZ mechanism. Its fixed greedy
 parser passed four of five Silesia development groups with 0.2757 aggregate
