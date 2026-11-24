@@ -304,6 +304,11 @@ bits in aggregate. It is rejected before artifact, Calgary, or enwik9 work.
 Do not add previous-length, previous-distance, or multi-block state contexts
 on these corpora without a different measured dependency.
 
+RFC 0028 pre-registers a fixed-memory match-finder experiment. It replaces the
+direct-mapped parser table with two-way sets while retaining exactly two
+occurrences per equal key and the existing `TKT9` decoder. This tests
+cross-key collision loss, not another candidate-count or tensor-rank sweep.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console
