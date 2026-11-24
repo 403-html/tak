@@ -321,6 +321,11 @@ eight-byte prediction. Four of five Silesia tails improved. The aggregate
 saved 0.012735 ideal bits per input byte, below the 0.016 development gate.
 The experiment ended before Calgary.
 
+RFC 0031 tested nine reversible lag-XOR transforms with the RFC 0019
+encoder. After wrapper overhead, only Calgary's `geo` improved, by 215
+bytes. All 290 Calgary and Canterbury trials restored exactly. The
+experiment ended at complete-artifact screening.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console
