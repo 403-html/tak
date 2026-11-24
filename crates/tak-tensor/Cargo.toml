@@ -103,6 +103,10 @@ path = "src/lz_structural_main.rs"
 name = "tak-lz-repriced-gate"
 path = "src/lz_repriced_main.rs"
 
+[[bin]]
+name = "tak-literal-phase-order2"
+path = "src/literal_phase_order2_main.rs"
+
 [dependencies]
 tak-codecs = { path = "../tak-codecs" }
 tak-context = { path = "../tak-context" }

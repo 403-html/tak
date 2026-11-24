@@ -667,6 +667,17 @@ impl Order2NormalizedModel {
         self.local_index()
             .and_then(|context| self.locals[context].as_deref())
     }
+
+    /// Advances the two-byte history without updating frequency tables.
+    ///
+    /// Research diagnostics use this operation when a decoder-known state
+    /// selects a different model for the current byte. Every model must still
+    /// observe the byte so its next context remains synchronized.
+    pub fn observe(&mut self, symbol: u8) {
+        self.history.rotate_left(1);
+        self.history[1] = symbol;
+        self.seen = self.seen.saturating_add(1).min(2);
+    }
 }
 
 impl ByteModel for Order2NormalizedModel {
@@ -736,9 +747,7 @@ impl ByteModel for Order2NormalizedModel {
                 .get_or_insert_with(|| Box::new(LocalIncrements::new()))
                 .update(symbol);
         }
-        self.history.rotate_left(1);
-        self.history[1] = symbol;
-        self.seen = self.seen.saturating_add(1).min(2);
+        self.observe(symbol);
     }
 
     fn total(&self) -> u32 {
@@ -985,6 +994,18 @@ mod tests {
                 NonZeroU16::new(strength).unwrap(),
             ));
         }
+    }
+
+    #[test]
+    fn normalized_order_2_observe_advances_history_without_learning() {
+        let strength = NonZeroU16::new(4).unwrap();
+        let mut model = Order2NormalizedModel::new(strength);
+        model.observe(b'a');
+        model.observe(b'b');
+        assert_eq!(model.history, [b'a', b'b']);
+        assert_eq!(model.seen, 2);
+        assert!(model.locals.iter().all(Option::is_none));
+        assert!(model.parents.iter().all(|parent| parent.total == 256));
     }
 
     #[test]
