@@ -256,6 +256,13 @@ a further 14.31% reduction from the current artifact. Encoding reached 1.81
 MB/s and decoding reached 9.27 MB/s. Do not add phase bins or experts without
 a new held-out opportunity result.
 
+The next diagnostic tested adaptive coding of LZ distance-remainder bits by
+bit position and distance bucket. It saved 0.01753 bits per input byte on the
+Silesia development tails but only 0.00436 on Calgary, with improvements on
+just 3 of 18 Calgary files. Even a zero-overhead per-file oracle can remove
+only about 2.1 KB, or 3.3% of the Calgary xz gap. The mechanism is rejected;
+do not add mixtures, more contexts, or a tensor for distance remainders.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console
