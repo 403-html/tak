@@ -302,6 +302,12 @@ pub fn encode_lz_structural_artifact(input: &[u8]) -> Vec<u8> {
     encode_structural_blocks(input, priced::parse_priced(input))
 }
 
+/// Encodes an RFC 0028 two-way parser-table candidate in RFC 0019 syntax.
+#[must_use]
+pub fn encode_lz_associative_artifact(input: &[u8]) -> Vec<u8> {
+    encode_structural_blocks(input, priced::parse_priced_associative(input))
+}
+
 /// Encodes an RFC 0024 same-distance-coalesced `TKT9` research artifact.
 ///
 /// The decoder and artifact syntax are unchanged from RFC 0019.
@@ -3353,13 +3359,14 @@ mod tests {
         Block, EXPERT_DIVISORS, EXPERTS, IntegerExpertMixture, LzError, coalesce_same_distance,
         decode_lz_artifact, decode_lz_phase_artifact, decode_lz_phase_stream,
         decode_lz_short_artifact, decode_lz_stream, decode_lz_structural_artifact,
-        decode_lz_structural_stream, encode_lz_artifact, encode_lz_coalesced_artifact,
-        encode_lz_phase_artifact, encode_lz_phase_stream, encode_lz_priced_artifact,
-        encode_lz_short_artifact, encode_lz_stream, encode_lz_structural_artifact,
-        encode_lz_structural_repriced_artifact, encode_lz_structural_stream,
-        encode_lz_two_candidate_artifact, encode_lz_two_candidate_stream, literal_phase,
-        profile_length_conditioned_distance, profile_literal_phase_order2,
-        profile_lz_priced_residual, profile_match_distance_literal, short_match,
+        decode_lz_structural_stream, encode_lz_artifact, encode_lz_associative_artifact,
+        encode_lz_coalesced_artifact, encode_lz_phase_artifact, encode_lz_phase_stream,
+        encode_lz_priced_artifact, encode_lz_short_artifact, encode_lz_stream,
+        encode_lz_structural_artifact, encode_lz_structural_repriced_artifact,
+        encode_lz_structural_stream, encode_lz_two_candidate_artifact,
+        encode_lz_two_candidate_stream, literal_phase, profile_length_conditioned_distance,
+        profile_literal_phase_order2, profile_lz_priced_residual, profile_match_distance_literal,
+        short_match,
     };
     use crate::HEADER_LEN;
 
@@ -3523,6 +3530,21 @@ mod tests {
             );
             assert!(decode_lz_artifact(&artifact, u64::MAX).is_err());
             assert!(decode_lz_phase_artifact(&artifact, u64::MAX).is_err());
+        }
+    }
+
+    #[test]
+    fn associative_artifact_uses_existing_decoder() {
+        for input in [
+            Vec::new(),
+            b"short".to_vec(),
+            b"abcdefghXijklmnopYabcdefghZijklmnopQ".repeat(4_000),
+        ] {
+            let artifact = encode_lz_associative_artifact(&input);
+            assert_eq!(
+                decode_lz_structural_artifact(&artifact, input.len() as u64).unwrap(),
+                input
+            );
         }
     }
 

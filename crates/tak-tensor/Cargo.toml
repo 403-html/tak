@@ -100,6 +100,10 @@ name = "tak-lz-structural-gate"
 path = "src/lz_structural_main.rs"
 
 [[bin]]
+name = "tak-lz-associative-gate"
+path = "src/lz_associative_main.rs"
+
+[[bin]]
 name = "tak-lz-repriced-gate"
 path = "src/lz_repriced_main.rs"
 

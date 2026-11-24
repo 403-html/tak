@@ -1,6 +1,6 @@
 # RFC 0028: Set-associative parser match table
 
-- Status: Proposed
+- Status: Rejected at Calgary validation gate
 - Date: 2026-11-24
 - Scope: Classical LZ match finder
 - Format change: None
@@ -130,4 +130,27 @@ associativity value.
 This RFC does not authorize a tensor model. Table collision is a deterministic
 data-structure limitation with a direct classical control. It does not define
 a longer-context statistical dependency.
+
+## 11. Result
+
+The candidate passes the Silesia development gate. It makes all five complete
+artifacts smaller and reduces the aggregate from 2,680,799 to 2,679,001 bytes.
+The 1,798-byte saving is 0.001522 bits per input byte.
+
+After one warm-up and five measured repetitions, the median aggregate encode
+ratio is 0.911 and the median decode ratio is 0.979. Peak process RSS is
+145,016 KiB. All outputs restore exactly.
+
+Reject the candidate at Calgary validation. It reduces the complete aggregate
+from 942,454 to 941,663 bytes and does not make any file larger. It improves
+only 10 of 18 files; the other eight are byte-identical. The gate requires at
+least 15 improved files. Stop before controlled Calgary timing, bounded
+implementation, or enwik9.
+
+Both tables contain 1,048,576 entries. On the measured x86-64 target, each
+entry is 24 bytes and each table payload is 25,165,824 bytes. The result
+isolates collision handling without increasing logical table capacity.
+
+Do not tune associativity or replacement from this result. See
+`research/experiments/2026-11-24-rejected-set-associative-match-table.md`.
 

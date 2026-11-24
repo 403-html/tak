@@ -304,10 +304,12 @@ bits in aggregate. It is rejected before artifact, Calgary, or enwik9 work.
 Do not add previous-length, previous-distance, or multi-block state contexts
 on these corpora without a different measured dependency.
 
-RFC 0028 pre-registers a fixed-memory match-finder experiment. It replaces the
-direct-mapped parser table with two-way sets while retaining exactly two
-occurrences per equal key and the existing `TKT9` decoder. This tests
-cross-key collision loss, not another candidate-count or tensor-rank sweep.
+RFC 0028 tested a fixed-memory two-way parser table while retaining exactly
+two occurrences per equal key and the existing `TKT9` decoder. It saved 1,798
+bytes and improved all five Silesia development files. On Calgary it saved
+791 bytes but improved only 10 of 18 files; eight were byte-identical. This
+fails the frozen 15-file transfer gate. Associativity and replacement tuning
+are prohibited, and enwik9 was not run.
 
 Reproduce the RFC 0002 tensor artifact with:
 

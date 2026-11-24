@@ -198,15 +198,28 @@ pub(super) fn parse_priced_structural(input: &[u8]) -> Vec<Block> {
     parse_priced_mode(input, true)
 }
 
+pub(super) fn parse_priced_associative(input: &[u8]) -> Vec<Block> {
+    parse_priced_mode_with_table(input, false, true)
+}
+
 fn parse_priced_mode(input: &[u8], structural_types: bool) -> Vec<Block> {
+    parse_priced_mode_with_table(input, structural_types, false)
+}
+
+fn parse_priced_mode_with_table(
+    input: &[u8],
+    structural_types: bool,
+    associative: bool,
+) -> Vec<Block> {
     let mut blocks = Vec::new();
-    parse_priced_with_mode(
+    parse_priced_with_table(
         &mut SliceInput(input),
         |_, block| {
             blocks.push(block);
             Ok(())
         },
         structural_types,
+        associative,
     )
     .expect("in-memory input cannot fail");
     blocks
@@ -221,11 +234,20 @@ pub(super) fn parse_priced_with<I: PricedInput>(
 
 fn parse_priced_with_mode<I: PricedInput>(
     input: &mut I,
-    mut sink: impl FnMut(&mut I, Block) -> Result<(), LzStreamError>,
+    sink: impl FnMut(&mut I, Block) -> Result<(), LzStreamError>,
     structural_types: bool,
 ) -> Result<(), LzStreamError> {
+    parse_priced_with_table(input, sink, structural_types, false)
+}
+
+fn parse_priced_with_table<I: PricedInput>(
+    input: &mut I,
+    mut sink: impl FnMut(&mut I, Block) -> Result<(), LzStreamError>,
+    structural_types: bool,
+    associative: bool,
+) -> Result<(), LzStreamError> {
     let input_len = input.len();
-    let mut table = vec![Entry::default(); TABLE_LEN];
+    let mut table = ParserTable::new(associative);
     let mut model = Match8Model::new();
     let mut emitter = Emitter::new(structural_types);
     let mut candidates: Vec<[Candidate; 2]> = Vec::with_capacity(SEGMENT_LEN);
@@ -246,7 +268,7 @@ fn parse_priced_with_mode<I: PricedInput>(
             candidates.push(found);
             let byte = input.byte(position)?;
             literal_bits.push(model_bits(&model, byte));
-            insert_key(&mut table, key, position);
+            table.insert(key, position);
             model.update(byte);
             position += 1;
         }
@@ -256,7 +278,7 @@ fn parse_priced_with_mode<I: PricedInput>(
             emitter.matched(length, candidate.distance as usize);
             for consumed in position..position + length {
                 let key = input.key(consumed)?;
-                insert_key(&mut table, key, consumed);
+                table.insert(key, consumed);
                 model.update(input.byte(consumed)?);
             }
             position += length;
@@ -270,6 +292,69 @@ fn parse_priced_with_mode<I: PricedInput>(
         sink(input, block)?;
     }
     Ok(())
+}
+
+enum ParserTable {
+    Direct(Vec<Entry>),
+    Associative(Vec<[Entry; 2]>),
+}
+
+impl ParserTable {
+    fn new(associative: bool) -> Self {
+        if associative {
+            Self::Associative(vec![[Entry::default(); 2]; TABLE_LEN / 2])
+        } else {
+            Self::Direct(vec![Entry::default(); TABLE_LEN])
+        }
+    }
+
+    fn entry(&self, key: u64) -> Option<Entry> {
+        match self {
+            Self::Direct(table) => {
+                let entry = table[table_index(key)];
+                (entry.occupied && entry.key == key).then_some(entry)
+            }
+            Self::Associative(table) => table[table_index(key) >> 1]
+                .iter()
+                .copied()
+                .find(|entry| entry.occupied && entry.key == key),
+        }
+    }
+
+    fn insert(&mut self, key: Option<u64>, position: usize) {
+        let Some(key) = key else {
+            return;
+        };
+        let position = u32::try_from(position).expect("encoder input is bounded to u32");
+        match self {
+            Self::Direct(table) => update_entry(&mut table[table_index(key)], key, position),
+            Self::Associative(table) => {
+                let ways = &mut table[table_index(key) >> 1];
+                let way = ways
+                    .iter()
+                    .position(|entry| entry.occupied && entry.key == key)
+                    .or_else(|| ways.iter().position(|entry| !entry.occupied))
+                    .unwrap_or_else(|| usize::from(ways[1].position < ways[0].position));
+                update_entry(&mut ways[way], key, position);
+            }
+        }
+    }
+}
+
+fn update_entry(entry: &mut Entry, key: u64, position: u32) {
+    if entry.occupied && entry.key == key {
+        entry.previous_position = entry.position;
+        entry.has_previous = true;
+        entry.position = position;
+    } else {
+        *entry = Entry {
+            key,
+            position,
+            previous_position: 0,
+            has_previous: false,
+            occupied: true,
+        };
+    }
 }
 
 pub(super) const RING_LEN: usize = 128 * 1024 * 1024;
@@ -494,41 +579,19 @@ fn encode_priced_stream_with_ring(
     )
 }
 
-fn insert_key(table: &mut [Entry], key: Option<u64>, position: usize) {
-    let Some(key) = key else {
-        return;
-    };
-    let entry = &mut table[table_index(key)];
-    let position = u32::try_from(position).expect("encoder input is bounded to u32");
-    if entry.occupied && entry.key == key {
-        entry.previous_position = entry.position;
-        entry.has_previous = true;
-        entry.position = position;
-    } else {
-        *entry = Entry {
-            key,
-            position,
-            previous_position: 0,
-            has_previous: false,
-            occupied: true,
-        };
-    }
-}
-
 fn find_candidates<I: PricedInput>(
     input: &mut I,
     position: usize,
     key: Option<u64>,
-    table: &[Entry],
+    table: &ParserTable,
 ) -> Result<[Candidate; 2], LzStreamError> {
     let mut found = [Candidate::default(); 2];
     let Some(key) = key else {
         return Ok(found);
     };
-    let entry = table[table_index(key)];
-    if !entry.occupied || entry.key != key {
+    let Some(entry) = table.entry(key) else {
         return Ok(found);
-    }
+    };
     if let Some(newest) = candidate_at(input, position, entry.position)? {
         found[0] = newest;
     }
@@ -721,8 +784,8 @@ mod tests {
 
     use super::super::{decode_lz_artifact, encode_lz_priced_artifact};
     use super::{
-        Block, encode_priced_stream, encode_priced_stream_with_ring, parse_priced,
-        parse_priced_structural,
+        Block, Entry, ParserTable, TABLE_LEN, encode_priced_stream, encode_priced_stream_with_ring,
+        parse_priced, parse_priced_structural,
     };
 
     fn noise(length: usize, mut state: u64) -> Vec<u8> {
@@ -779,6 +842,23 @@ mod tests {
             encode_priced_stream(&mut Cursor::new(input), &mut output).unwrap();
             assert_eq!(output.into_inner(), encode_lz_priced_artifact(input));
         }
+    }
+
+    #[test]
+    fn parser_tables_have_equal_entry_storage() {
+        assert_eq!(std::mem::size_of::<Entry>(), 24);
+        let direct = ParserTable::new(false);
+        let associative = ParserTable::new(true);
+        let direct_entries = match direct {
+            ParserTable::Direct(table) => table.len(),
+            ParserTable::Associative(_) => unreachable!(),
+        };
+        let associative_entries = match associative {
+            ParserTable::Associative(table) => table.len() * 2,
+            ParserTable::Direct(_) => unreachable!(),
+        };
+        assert_eq!(direct_entries, TABLE_LEN);
+        assert_eq!(associative_entries, TABLE_LEN);
     }
 
     fn covered(blocks: &[Block]) -> usize {
