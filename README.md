@@ -279,6 +279,13 @@ than RFC 0017, and restores all one billion bytes exactly. It beats M1 by
 bytes above xz, and 52,762,881 bytes above M2. Matching xz requires a further
 13.65% reduction. Encoding reached 1.59 MB/s and decoding reached 8.94 MB/s.
 
+RFC 0020 tested whether match-length and distance buckets depend usefully on
+whether a match follows a literal or another match. The frozen two-state model
+improved only one of five Silesia development files and added about 4,993 ideal
+bits in aggregate. It is rejected before artifact, Calgary, or enwik9 work.
+Do not add previous-length, previous-distance, or multi-block state contexts
+on these corpora without a different measured dependency.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console

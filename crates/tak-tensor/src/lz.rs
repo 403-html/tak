@@ -22,6 +22,7 @@ const MAX_DISTANCE_U64: u64 = 64 * 1024 * 1024;
 const INPUT_PAGE_LEN: usize = 64 * 1024;
 const INPUT_PAGE_COUNT: usize = 4;
 const MAX_TOTAL: u32 = 16_384;
+const REPEAT_SLOTS: usize = 4;
 const RANGE_MAX: u64 = u32::MAX as u64;
 const HALF: u64 = 0x8000_0000;
 const QUARTER: u64 = 0x4000_0000;
@@ -94,8 +95,14 @@ pub struct LzPricedResidualProfile {
     pub structural_type_decisions: usize,
     /// Match symbols implied by the preceding literal block and output length.
     pub implicit_match_types: usize,
+    /// Ideal global bucket and remainder bits for all match lengths.
+    pub match_length_bits: f64,
+    /// Match-length bits from models split by preceding block type.
+    pub state_match_length_bits: f64,
     /// Ideal bucket and remainder bits for all match distances.
     pub distance_bits: f64,
+    /// Match-distance bits from bucket models split by preceding block type.
+    pub state_distance_bits: f64,
     /// Raw equiprobable remainder bits for all match distances.
     pub distance_remainder_bits: usize,
     /// Ideal remainder cost from one adaptive model per bit position.
@@ -305,14 +312,13 @@ pub fn encode_lz_structural_stream(
 /// Profiles repeat-distance and post-match exclusion upper bounds for RFC 0016.
 #[must_use]
 pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
-    const REPEAT_SLOTS: usize = 4;
-
     let blocks = priced::parse_priced(input);
     let mut result = LzPricedResidualProfile {
         input_bytes: input.len(),
         ..LzPricedResidualProfile::default()
     };
     profile_block_types(&blocks, &mut result);
+    profile_match_state(&blocks, &mut result);
     profile_short_matches(input, &blocks, &mut result);
     let mut distances = AdaptiveDistribution::new(32);
     let mut remainder_models = DistanceRemainderModels::new();
@@ -436,6 +442,44 @@ fn profile_block_types(blocks: &[Block], result: &mut LzPricedResidualProfile) {
 
     let (low, high, total) = global.range(2);
     result.global_type_bits += f64::from(total).log2() - f64::from(high - low).log2();
+}
+
+fn profile_match_state(blocks: &[Block], result: &mut LzPricedResidualProfile) {
+    let mut match_lengths = AdaptiveDistribution::new(32);
+    let mut state_match_lengths: [AdaptiveDistribution; 2] =
+        std::array::from_fn(|_| AdaptiveDistribution::new(32));
+    let mut state_distances: [AdaptiveDistribution; 2] =
+        std::array::from_fn(|_| AdaptiveDistribution::new(32));
+    let mut previous_was_literal = false;
+
+    for &block in blocks {
+        let Block::Match { length, distance } = block else {
+            previous_was_literal = true;
+            continue;
+        };
+        let state = usize::from(previous_was_literal);
+        let length_value = length - MIN_MATCH;
+        let length_bucket_u32 = (length_value + 1).ilog2();
+        let length_bucket = usize::try_from(length_bucket_u32).unwrap_or(0);
+        let (low, high, total) = match_lengths.range(length_bucket);
+        result.match_length_bits +=
+            f64::from(total).log2() - f64::from(high - low).log2() + f64::from(length_bucket_u32);
+        match_lengths.update(length_bucket);
+        let contextual = &mut state_match_lengths[state];
+        let (low, high, total) = contextual.range(length_bucket);
+        result.state_match_length_bits +=
+            f64::from(total).log2() - f64::from(high - low).log2() + f64::from(length_bucket_u32);
+        contextual.update(length_bucket);
+
+        let bucket_u32 = distance.ilog2();
+        let bucket = usize::try_from(bucket_u32).unwrap_or(0);
+        let contextual = &mut state_distances[state];
+        let (low, high, total) = contextual.range(bucket);
+        result.state_distance_bits +=
+            f64::from(total).log2() - f64::from(high - low).log2() + f64::from(bucket_u32);
+        contextual.update(bucket);
+        previous_was_literal = false;
+    }
 }
 
 struct DistanceRemainderModels {
@@ -3290,7 +3334,10 @@ mod tests {
             profile.structural_type_decisions + profile.implicit_match_types,
             profile.literal_blocks + profile.match_blocks
         );
+        assert!(profile.match_length_bits.is_finite());
+        assert!(profile.state_match_length_bits.is_finite());
         assert!(profile.distance_bits.is_finite());
+        assert!(profile.state_distance_bits.is_finite());
         assert!(profile.distance_remainder_bits > 0);
         assert!(profile.global_remainder_model_bits.is_finite());
         assert!(profile.bucket_remainder_model_bits.is_finite());
