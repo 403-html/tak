@@ -86,6 +86,12 @@ pub struct LzPricedResidualProfile {
     pub match_bytes: usize,
     /// Ideal bucket and remainder bits for all match distances.
     pub distance_bits: f64,
+    /// Raw equiprobable remainder bits for all match distances.
+    pub distance_remainder_bits: usize,
+    /// Ideal remainder cost from one adaptive model per bit position.
+    pub global_remainder_model_bits: f64,
+    /// Ideal remainder cost from adaptive models keyed by bucket and bit position.
+    pub bucket_remainder_model_bits: f64,
     /// Matches that repeat the immediately preceding distance.
     pub repeat0_matches: usize,
     /// Distance bits used by immediately repeated distances.
@@ -253,6 +259,7 @@ pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
         ..LzPricedResidualProfile::default()
     };
     let mut distances = AdaptiveDistribution::new(32);
+    let mut remainder_models = DistanceRemainderModels::new();
     let mut recent = Vec::with_capacity(REPEAT_SLOTS);
     let mut literal_profile = LiteralProfileState {
         model: Match8Model::new(),
@@ -310,6 +317,7 @@ pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
                 let distance_bits =
                     f64::from(total).log2() - f64::from(high - low).log2() + f64::from(bucket_u32);
                 result.distance_bits += distance_bits;
+                remainder_models.profile(distance, bucket, &mut result);
                 distances.update(bucket);
 
                 if let Some(slot) = recent.iter().position(|&value| value == distance) {
@@ -345,6 +353,39 @@ pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
     }
     debug_assert_eq!(position, input.len());
     result
+}
+
+struct DistanceRemainderModels {
+    global: Vec<AdaptiveDistribution>,
+    by_bucket: Vec<AdaptiveDistribution>,
+}
+
+impl DistanceRemainderModels {
+    fn new() -> Self {
+        Self {
+            global: (0..32).map(|_| AdaptiveDistribution::new(2)).collect(),
+            by_bucket: (0..32 * 32).map(|_| AdaptiveDistribution::new(2)).collect(),
+        }
+    }
+
+    fn profile(&mut self, distance: usize, bucket: usize, result: &mut LzPricedResidualProfile) {
+        result.distance_remainder_bits += bucket;
+        let remainder = distance - (1_usize << bucket);
+        for (bit_position, shift) in (0..bucket).zip((0..bucket).rev()) {
+            let bit = (remainder >> shift) & 1;
+            let global = &mut self.global[bit_position];
+            let (low, high, total) = global.range(bit);
+            result.global_remainder_model_bits +=
+                f64::from(total).log2() - f64::from(high - low).log2();
+            global.update(bit);
+
+            let by_bucket = &mut self.by_bucket[bucket * 32 + bit_position];
+            let (low, high, total) = by_bucket.range(bit);
+            result.bucket_remainder_model_bits +=
+                f64::from(total).log2() - f64::from(high - low).log2();
+            by_bucket.update(bit);
+        }
+    }
 }
 
 struct LiteralProfileState {
@@ -2510,6 +2551,9 @@ mod tests {
         let profile = profile_lz_priced_residual(&input);
         assert_eq!(profile.literal_bytes + profile.match_bytes, input.len());
         assert!(profile.distance_bits.is_finite());
+        assert!(profile.distance_remainder_bits > 0);
+        assert!(profile.global_remainder_model_bits.is_finite());
+        assert!(profile.bucket_remainder_model_bits.is_finite());
         assert!(profile.exclusion_saved_bits.is_finite());
     }
 
