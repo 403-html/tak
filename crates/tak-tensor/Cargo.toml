@@ -95,6 +95,10 @@ path = "src/lz_phase_main.rs"
 name = "tak-lz-short-gate"
 path = "src/lz_short_main.rs"
 
+[[bin]]
+name = "tak-lz-structural-gate"
+path = "src/lz_structural_main.rs"
+
 [dependencies]
 tak-codecs = { path = "../tak-codecs" }
 tak-context = { path = "../tak-context" }

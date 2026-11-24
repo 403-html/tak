@@ -11,6 +11,7 @@ mod priced;
 const MAGIC: &[u8; 4] = b"TKLZ";
 const PHASE_MAGIC: &[u8; 4] = b"TKP7";
 const SHORT_MAGIC: &[u8; 4] = b"TKS3";
+const STRUCTURAL_MAGIC: &[u8; 4] = b"TKT9";
 const TABLE_BITS: u32 = 20;
 const TABLE_LEN: usize = 1 << TABLE_BITS;
 const HASH_MULTIPLIER: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -85,6 +86,14 @@ pub struct LzPricedResidualProfile {
     pub literal_bytes: usize,
     /// Number of bytes copied by matches.
     pub match_bytes: usize,
+    /// Ideal bits used by the current global literal, match, and end symbols.
+    pub global_type_bits: f64,
+    /// Ideal literal-or-match bits after removing decoder-known symbols.
+    pub structural_type_bits: f64,
+    /// Explicit binary literal-or-match decisions in the structural model.
+    pub structural_type_decisions: usize,
+    /// Match symbols implied by the preceding literal block and output length.
+    pub implicit_match_types: usize,
     /// Ideal bucket and remainder bits for all match distances.
     pub distance_bits: f64,
     /// Raw equiprobable remainder bits for all match distances.
@@ -228,6 +237,12 @@ pub fn encode_lz_short_artifact(input: &[u8]) -> Vec<u8> {
     encode_short_blocks(input, short_blocks(input, &blocks))
 }
 
+/// Encodes an RFC 0019 structural-block-type research artifact.
+#[must_use]
+pub fn encode_lz_structural_artifact(input: &[u8]) -> Vec<u8> {
+    encode_structural_blocks(input, priced::parse_priced(input))
+}
+
 /// Encodes an RFC 0016 price-based parser artifact with bounded memory.
 ///
 /// The artifact is byte-identical to [`encode_lz_priced_artifact`].
@@ -261,6 +276,29 @@ pub fn encode_lz_phase_stream(
         priced::RING_LEN,
         *PHASE_MAGIC,
         PhaseMatchModel::new(),
+        false,
+    )
+}
+
+/// Encodes an RFC 0019 structural-block-type artifact with bounded memory.
+///
+/// The artifact is byte-identical to [`encode_lz_structural_artifact`].
+///
+/// # Errors
+///
+/// Returns an error for I/O failure, a nonempty output, or an input larger than
+/// the experimental format's `u32` encoder-position limit.
+pub fn encode_lz_structural_stream(
+    mut input: impl Read + Seek,
+    mut output: impl Write + Seek,
+) -> Result<LzEncodeStats, LzStreamError> {
+    priced::encode_priced_stream_with_model(
+        &mut input,
+        &mut output,
+        priced::RING_LEN,
+        *STRUCTURAL_MAGIC,
+        PhaseMatchModel::new(),
+        true,
     )
 }
 
@@ -274,6 +312,7 @@ pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
         input_bytes: input.len(),
         ..LzPricedResidualProfile::default()
     };
+    profile_block_types(&blocks, &mut result);
     profile_short_matches(input, &blocks, &mut result);
     let mut distances = AdaptiveDistribution::new(32);
     let mut remainder_models = DistanceRemainderModels::new();
@@ -370,6 +409,33 @@ pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
     }
     debug_assert_eq!(position, input.len());
     result
+}
+
+fn profile_block_types(blocks: &[Block], result: &mut LzPricedResidualProfile) {
+    let mut global = AdaptiveDistribution::new(3);
+    let mut structural = AdaptiveDistribution::new(2);
+    let mut previous_was_literal = false;
+
+    for &block in blocks {
+        let symbol = usize::from(matches!(block, Block::Match { .. }));
+        let (low, high, total) = global.range(symbol);
+        result.global_type_bits += f64::from(total).log2() - f64::from(high - low).log2();
+        global.update(symbol);
+
+        if previous_was_literal {
+            debug_assert!(matches!(block, Block::Match { .. }));
+            result.implicit_match_types += 1;
+        } else {
+            let (low, high, total) = structural.range(symbol);
+            result.structural_type_bits += f64::from(total).log2() - f64::from(high - low).log2();
+            result.structural_type_decisions += 1;
+            structural.update(symbol);
+        }
+        previous_was_literal = matches!(block, Block::Literal { .. });
+    }
+
+    let (low, high, total) = global.range(2);
+    result.global_type_bits += f64::from(total).log2() - f64::from(high - low).log2();
 }
 
 struct DistanceRemainderModels {
@@ -1175,6 +1241,60 @@ fn encode_short_blocks(input: &[u8], blocks: Vec<ShortBlock>) -> Vec<u8> {
     artifact
 }
 
+fn encode_structural_blocks(input: &[u8], blocks: Vec<Block>) -> Vec<u8> {
+    let mut encoder = RangeEncoder::new();
+    let mut model = PhaseMatchModel::new();
+    let mut types = AdaptiveDistribution::new(2);
+    let mut literal_lengths = AdaptiveDistribution::new(32);
+    let mut match_lengths = AdaptiveDistribution::new(32);
+    let mut distances = AdaptiveDistribution::new(32);
+    let mut position = 0;
+    let mut previous_was_literal = false;
+
+    for block in blocks {
+        match block {
+            Block::Literal { start, length } => {
+                debug_assert!(!previous_was_literal);
+                debug_assert_eq!(start, position);
+                encode_adaptive(&mut encoder, &mut types, 0);
+                encode_bucket(&mut encoder, &mut literal_lengths, length - 1);
+                for (offset, &byte) in input[start..start + length].iter().enumerate() {
+                    model.set_phase(Some(literal_phase(offset)));
+                    let (low, high, total) = model.range(byte);
+                    encoder.encode(low, high, total);
+                    model.update(byte);
+                }
+                position += length;
+                previous_was_literal = true;
+            }
+            Block::Match { length, distance } => {
+                model.set_phase(None);
+                if !previous_was_literal {
+                    encode_adaptive(&mut encoder, &mut types, 1);
+                }
+                encode_bucket(&mut encoder, &mut match_lengths, length - MIN_MATCH);
+                encode_bucket(&mut encoder, &mut distances, distance - 1);
+                for &byte in &input[position..position + length] {
+                    model.update(byte);
+                }
+                position += length;
+                previous_was_literal = false;
+            }
+        }
+    }
+    debug_assert_eq!(position, input.len());
+    let payload = encoder.finish();
+
+    let mut artifact = Vec::with_capacity(HEADER_LEN + payload.len());
+    artifact.extend_from_slice(STRUCTURAL_MAGIC);
+    artifact.extend_from_slice(&[0; 4]);
+    artifact.extend_from_slice(&(input.len() as u64).to_le_bytes());
+    artifact.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    artifact.extend_from_slice(&crc32(input).to_le_bytes());
+    artifact.extend_from_slice(&payload);
+    artifact
+}
+
 fn stream_crc(input: &mut (impl Read + Seek), input_len: u64) -> Result<Crc32, LzStreamError> {
     input.seek(SeekFrom::Start(0))?;
     let mut crc = Crc32::new();
@@ -1437,6 +1557,87 @@ pub fn decode_lz_short_artifact(artifact: &[u8], max_output: u64) -> Result<Vec<
     Ok(output)
 }
 
+/// Decodes an RFC 0019 structural-block-type research artifact.
+///
+/// # Errors
+///
+/// Returns an error for invalid fields, excessive output, invalid arithmetic,
+/// invalid match extents, or a checksum mismatch.
+pub fn decode_lz_structural_artifact(artifact: &[u8], max_output: u64) -> Result<Vec<u8>, LzError> {
+    if artifact.len() < HEADER_LEN || artifact[..4] != *STRUCTURAL_MAGIC || artifact[4..8] != [0; 4]
+    {
+        return Err(LzError::InvalidArtifact);
+    }
+    let output_len = read_u64(&artifact[8..16]);
+    if output_len > max_output {
+        return Err(LzError::OutputLimitExceeded);
+    }
+    let output_len = usize::try_from(output_len).map_err(|_| LzError::InvalidArtifact)?;
+    let payload_len =
+        usize::try_from(read_u64(&artifact[16..24])).map_err(|_| LzError::InvalidArtifact)?;
+    if artifact.len()
+        != HEADER_LEN
+            .checked_add(payload_len)
+            .ok_or(LzError::InvalidArtifact)?
+    {
+        return Err(LzError::InvalidArtifact);
+    }
+    let expected_crc = u32::from_le_bytes([artifact[24], artifact[25], artifact[26], artifact[27]]);
+    let mut decoder = RangeDecoder::new(&artifact[HEADER_LEN..]);
+    let mut model = PhaseMatchModel::new();
+    let mut types = AdaptiveDistribution::new(2);
+    let mut literal_lengths = AdaptiveDistribution::new(32);
+    let mut match_lengths = AdaptiveDistribution::new(32);
+    let mut distances = AdaptiveDistribution::new(32);
+    let mut output = Vec::with_capacity(output_len);
+    let mut previous_was_literal = false;
+
+    while output.len() < output_len {
+        let block_type = if previous_was_literal {
+            1
+        } else {
+            decode_adaptive(&mut decoder, &mut types)?
+        };
+        match block_type {
+            0 => {
+                let length = decode_bucket(&mut decoder, &mut literal_lengths)?
+                    .checked_add(1)
+                    .ok_or(LzError::InvalidArtifact)?;
+                ensure_remaining(output.len(), length, output_len)?;
+                for offset in 0..length {
+                    model.set_phase(Some(literal_phase(offset)));
+                    let scaled = decoder.scaled(model.total())?;
+                    let (byte, low, high, total) = model.symbol(scaled);
+                    decoder.advance(low, high, total)?;
+                    output.push(byte);
+                    model.update(byte);
+                }
+                previous_was_literal = true;
+            }
+            1 => {
+                let length = decode_bucket(&mut decoder, &mut match_lengths)?
+                    .checked_add(MIN_MATCH)
+                    .filter(|&length| length <= MAX_MATCH)
+                    .ok_or(LzError::InvalidArtifact)?;
+                decode_short_copy(
+                    &mut decoder,
+                    &mut distances,
+                    &mut model,
+                    &mut output,
+                    output_len,
+                    length,
+                )?;
+                previous_was_literal = false;
+            }
+            _ => return Err(LzError::InvalidArtifact),
+        }
+    }
+    if crc32(&output) != expected_crc {
+        return Err(LzError::ChecksumMismatch);
+    }
+    Ok(output)
+}
+
 fn decode_short_copy(
     decoder: &mut RangeDecoder<'_>,
     distances: &mut AdaptiveDistribution,
@@ -1562,6 +1763,7 @@ pub fn decode_lz_stream(
         max_output,
         *MAGIC,
         StandardMatchModel::new(),
+        false,
     )
 }
 
@@ -1582,6 +1784,28 @@ pub fn decode_lz_phase_stream(
         max_output,
         *PHASE_MAGIC,
         PhaseMatchModel::new(),
+        false,
+    )
+}
+
+/// Decodes an RFC 0019 structural-block-type artifact with bounded memory.
+///
+/// # Errors
+///
+/// Returns an error for I/O failure, invalid fields, excessive output, invalid
+/// arithmetic, invalid match extents, or a checksum mismatch.
+pub fn decode_lz_structural_stream(
+    mut artifact: impl Read + Seek,
+    output: impl Write,
+    max_output: u64,
+) -> Result<LzStreamStats, LzStreamError> {
+    decode_lz_stream_with_model(
+        &mut artifact,
+        output,
+        max_output,
+        *STRUCTURAL_MAGIC,
+        PhaseMatchModel::new(),
+        true,
     )
 }
 
@@ -1591,7 +1815,94 @@ fn decode_lz_stream_with_model(
     max_output: u64,
     magic: [u8; 4],
     mut model: impl BlockByteModel,
+    structural_types: bool,
 ) -> Result<LzStreamStats, LzStreamError> {
+    let (output_len, payload_len, expected_crc) = read_stream_header(artifact, max_output, magic)?;
+    let window_capacity =
+        usize::try_from(output_len.min(MAX_DISTANCE_U64)).map_err(|_| LzError::InvalidArtifact)?;
+    let mut restored = StreamOutput::new(output, window_capacity);
+    let mut decoder = StreamRangeDecoder::new(artifact.take(payload_len))?;
+    let mut types = AdaptiveDistribution::new(if structural_types { 2 } else { 3 });
+    let mut literal_lengths = AdaptiveDistribution::new(32);
+    let mut match_lengths = AdaptiveDistribution::new(32);
+    let mut distances = AdaptiveDistribution::new(32);
+
+    let mut previous_was_literal = false;
+    loop {
+        if structural_types && restored.bytes == output_len {
+            break;
+        }
+        let block_type = decode_stream_block_type(
+            &mut decoder,
+            &mut types,
+            structural_types,
+            previous_was_literal,
+        )?;
+        match block_type {
+            0 => {
+                let encoded = decode_bucket_stream(&mut decoder, &mut literal_lengths)?;
+                let length = encoded.checked_add(1).ok_or(LzError::InvalidArtifact)?;
+                ensure_remaining_u64(restored.bytes, length, output_len)?;
+                for offset in 0..length {
+                    model.set_phase(Some(literal_phase(offset)));
+                    let scaled = decoder.scaled(model.total())?;
+                    let (byte, low, high, total) = model.symbol(scaled);
+                    decoder.advance(low, high, total)?;
+                    restored.push(byte)?;
+                    model.update(byte);
+                }
+                previous_was_literal = true;
+            }
+            1 => {
+                model.set_phase(None);
+                let encoded_length = decode_bucket_stream(&mut decoder, &mut match_lengths)?;
+                let length = encoded_length
+                    .checked_add(MIN_MATCH)
+                    .filter(|&length| length <= MAX_MATCH)
+                    .ok_or(LzError::InvalidArtifact)?;
+                let encoded_distance = decode_bucket_stream(&mut decoder, &mut distances)?;
+                let distance = encoded_distance
+                    .checked_add(1)
+                    .filter(|&distance| {
+                        distance <= MAX_DISTANCE
+                            && u64::try_from(distance).is_ok_and(|value| value <= restored.bytes)
+                    })
+                    .ok_or(LzError::InvalidArtifact)?;
+                ensure_remaining_u64(restored.bytes, length, output_len)?;
+                for _ in 0..length {
+                    let byte = restored.match_byte(distance)?;
+                    restored.push(byte)?;
+                    model.update(byte);
+                }
+                previous_was_literal = false;
+            }
+            2 => {
+                if structural_types {
+                    return Err(LzError::InvalidArtifact.into());
+                }
+                if restored.bytes != output_len {
+                    return Err(LzError::InvalidArtifact.into());
+                }
+                break;
+            }
+            _ => return Err(LzError::InvalidArtifact.into()),
+        }
+    }
+    let (bytes, actual_crc) = restored.finish()?;
+    if actual_crc != expected_crc {
+        return Err(LzError::ChecksumMismatch.into());
+    }
+    Ok(LzStreamStats {
+        output_bytes: bytes,
+        payload_bytes: payload_len,
+    })
+}
+
+fn read_stream_header(
+    artifact: &mut (impl Read + Seek),
+    max_output: u64,
+    magic: [u8; 4],
+) -> Result<(u64, u64, u32), LzStreamError> {
     let artifact_len = artifact.seek(SeekFrom::End(0))?;
     artifact.seek(SeekFrom::Start(0))?;
     let mut header = [0_u8; HEADER_LEN];
@@ -1617,71 +1928,21 @@ fn decode_lz_stream_with_model(
     {
         return Err(LzError::InvalidArtifact.into());
     }
-    let expected_crc = u32::from_le_bytes([header[24], header[25], header[26], header[27]]);
-    let window_capacity =
-        usize::try_from(output_len.min(MAX_DISTANCE_U64)).map_err(|_| LzError::InvalidArtifact)?;
-    let mut restored = StreamOutput::new(output, window_capacity);
-    let mut decoder = StreamRangeDecoder::new(artifact.take(payload_len))?;
-    let mut types = AdaptiveDistribution::new(3);
-    let mut literal_lengths = AdaptiveDistribution::new(32);
-    let mut match_lengths = AdaptiveDistribution::new(32);
-    let mut distances = AdaptiveDistribution::new(32);
+    let crc = u32::from_le_bytes([header[24], header[25], header[26], header[27]]);
+    Ok((output_len, payload_len, crc))
+}
 
-    loop {
-        let block_type = decode_adaptive_stream(&mut decoder, &mut types)?;
-        match block_type {
-            0 => {
-                let encoded = decode_bucket_stream(&mut decoder, &mut literal_lengths)?;
-                let length = encoded.checked_add(1).ok_or(LzError::InvalidArtifact)?;
-                ensure_remaining_u64(restored.bytes, length, output_len)?;
-                for offset in 0..length {
-                    model.set_phase(Some(literal_phase(offset)));
-                    let scaled = decoder.scaled(model.total())?;
-                    let (byte, low, high, total) = model.symbol(scaled);
-                    decoder.advance(low, high, total)?;
-                    restored.push(byte)?;
-                    model.update(byte);
-                }
-            }
-            1 => {
-                model.set_phase(None);
-                let encoded_length = decode_bucket_stream(&mut decoder, &mut match_lengths)?;
-                let length = encoded_length
-                    .checked_add(MIN_MATCH)
-                    .filter(|&length| length <= MAX_MATCH)
-                    .ok_or(LzError::InvalidArtifact)?;
-                let encoded_distance = decode_bucket_stream(&mut decoder, &mut distances)?;
-                let distance = encoded_distance
-                    .checked_add(1)
-                    .filter(|&distance| {
-                        distance <= MAX_DISTANCE
-                            && u64::try_from(distance).is_ok_and(|value| value <= restored.bytes)
-                    })
-                    .ok_or(LzError::InvalidArtifact)?;
-                ensure_remaining_u64(restored.bytes, length, output_len)?;
-                for _ in 0..length {
-                    let byte = restored.match_byte(distance)?;
-                    restored.push(byte)?;
-                    model.update(byte);
-                }
-            }
-            2 => {
-                if restored.bytes != output_len {
-                    return Err(LzError::InvalidArtifact.into());
-                }
-                break;
-            }
-            _ => return Err(LzError::InvalidArtifact.into()),
-        }
+fn decode_stream_block_type<R: Read>(
+    decoder: &mut StreamRangeDecoder<R>,
+    types: &mut AdaptiveDistribution,
+    structural_types: bool,
+    previous_was_literal: bool,
+) -> Result<usize, LzStreamError> {
+    if structural_types && previous_was_literal {
+        Ok(1)
+    } else {
+        decode_adaptive_stream(decoder, types)
     }
-    let (bytes, actual_crc) = restored.finish()?;
-    if actual_crc != expected_crc {
-        return Err(LzError::ChecksumMismatch.into());
-    }
-    Ok(LzStreamStats {
-        output_bytes: bytes,
-        payload_bytes: payload_len,
-    })
 }
 
 fn ensure_remaining_u64(position: u64, length: usize, output_len: u64) -> Result<(), LzError> {
@@ -2734,8 +2995,10 @@ mod tests {
     use super::{
         EXPERT_DIVISORS, EXPERTS, IntegerExpertMixture, LzError, decode_lz_artifact,
         decode_lz_phase_artifact, decode_lz_phase_stream, decode_lz_short_artifact,
-        decode_lz_stream, encode_lz_artifact, encode_lz_phase_artifact, encode_lz_phase_stream,
+        decode_lz_stream, decode_lz_structural_artifact, decode_lz_structural_stream,
+        encode_lz_artifact, encode_lz_phase_artifact, encode_lz_phase_stream,
         encode_lz_priced_artifact, encode_lz_short_artifact, encode_lz_stream,
+        encode_lz_structural_artifact, encode_lz_structural_stream,
         encode_lz_two_candidate_artifact, encode_lz_two_candidate_stream, literal_phase,
         profile_lz_priced_residual, short_match,
     };
@@ -2888,6 +3151,38 @@ mod tests {
     }
 
     #[test]
+    fn structural_artifact_round_trips_and_is_format_isolated() {
+        for input in [
+            Vec::new(),
+            b"short".to_vec(),
+            b"abcdefghXabcdefghYabcdefghZ".repeat(2_000),
+        ] {
+            let artifact = encode_lz_structural_artifact(&input);
+            assert_eq!(
+                decode_lz_structural_artifact(&artifact, input.len() as u64).unwrap(),
+                input
+            );
+            assert!(decode_lz_artifact(&artifact, u64::MAX).is_err());
+            assert!(decode_lz_phase_artifact(&artifact, u64::MAX).is_err());
+        }
+    }
+
+    #[test]
+    fn structural_artifact_enforces_limits_and_integrity() {
+        let input = b"abcdefghXabcdefghYabcdefghZ".repeat(2_000);
+        let artifact = encode_lz_structural_artifact(&input);
+        assert_eq!(
+            decode_lz_structural_artifact(&artifact, 1),
+            Err(LzError::OutputLimitExceeded)
+        );
+
+        let mut corrupt = artifact;
+        let index = corrupt.len() / 2;
+        corrupt[index] ^= 1;
+        assert!(decode_lz_structural_artifact(&corrupt, input.len() as u64).is_err());
+    }
+
+    #[test]
     fn integer_expert_mixture_matches_reference_arithmetic() {
         let mut mixture = IntegerExpertMixture {
             weights: [1, 3, 17, 257, 4_099, 65_535],
@@ -2957,10 +3252,44 @@ mod tests {
     }
 
     #[test]
+    fn bounded_structural_codec_matches_buffered_artifact() {
+        let mut input = b"structural bounded identity ".repeat(4_000);
+        input.extend((0_u8..=255).cycle().take(70_000));
+        input.extend_from_slice(&input.clone()[20_000..80_000]);
+        let expected = encode_lz_structural_artifact(&input);
+        let mut artifact = Cursor::new(Vec::new());
+        let stats = encode_lz_structural_stream(Cursor::new(&input), &mut artifact).unwrap();
+        assert_eq!(artifact.get_ref(), &expected);
+        assert_eq!(stats.artifact_bytes, expected.len() as u64);
+
+        artifact.set_position(0);
+        let mut restored = Vec::new();
+        decode_lz_structural_stream(artifact, &mut restored, input.len() as u64).unwrap();
+        assert_eq!(restored, input);
+
+        let mut rejected = Vec::new();
+        assert!(decode_lz_structural_stream(Cursor::new(&expected), &mut rejected, 1).is_err());
+        let mut corrupt = expected;
+        let index = corrupt.len() / 2;
+        corrupt[index] ^= 1;
+        assert!(
+            decode_lz_structural_stream(Cursor::new(corrupt), &mut Vec::new(), input.len() as u64)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn priced_residual_profile_covers_input() {
         let input = b"abcdefghXabcdefghYabcdefghZ".repeat(1_000);
         let profile = profile_lz_priced_residual(&input);
         assert_eq!(profile.literal_bytes + profile.match_bytes, input.len());
+        assert!(profile.global_type_bits.is_finite());
+        assert!(profile.structural_type_bits.is_finite());
+        assert!(profile.global_type_bits > profile.structural_type_bits);
+        assert_eq!(
+            profile.structural_type_decisions + profile.implicit_match_types,
+            profile.literal_blocks + profile.match_blocks
+        );
         assert!(profile.distance_bits.is_finite());
         assert!(profile.distance_remainder_bits > 0);
         assert!(profile.global_remainder_model_bits.is_finite());

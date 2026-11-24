@@ -16,14 +16,14 @@ The current classical research model beats gzip -9 on Calgary and enwik9, but re
 |---|---:|
 | xz -9 | 215.67 MB |
 | Zstandard -19 | 235.33 MB |
-| **TAK (RFC 0017)** | **251.70 MB** |
+| **TAK (RFC 0019)** | **249.76 MB** |
 | gzip -9 | 322.59 MB |
 
-**TAK performance:** 1.81 MB/s compression with 220,796 KiB peak RSS and
-9.27 MB/s decompression with 96,064 KiB peak RSS. Exact SHA-256-verified
+**TAK performance:** 1.59 MB/s compression with 220,912 KiB peak RSS and
+8.94 MB/s decompression with 96,024 KiB peak RSS. Exact SHA-256-verified
 restoration. This bounded reference path prioritizes evidence over speed.
 
-[Full benchmark results](research/experiments/2026-11-24-literal-phase-match-reliability.md)
+[Full benchmark results](research/experiments/2026-11-24-structural-lz-block-types.md)
 
 ## Build
 
@@ -268,7 +268,16 @@ optimistic opportunity model improved all five Silesia tails and all 18 Calgary
 files, but complete accounting reversed the result. The artifact improved only
 two of five development files and grew by 23,048 bytes in aggregate. Exact
 restoration passed. The method is rejected without tuning, and Calgary and
-enwik9 were not run. RFC 0017 therefore remains the benchmark leader.
+enwik9 were not run. RFC 0017 remained the benchmark leader after this test.
+
+RFC 0019 removes LZ block-type symbols that are already implied by the
+preceding block and declared output length. The frozen complete artifact
+improves all five Silesia development files and all 18 Calgary files. The
+bounded enwik9 artifact is 249,762,881 bytes, 1,935,499 bytes or 0.769% smaller
+than RFC 0017, and restores all one billion bytes exactly. It beats M1 by
+72,237,119 bytes but remains 14,433,942 bytes above Zstandard-19, 34,088,685
+bytes above xz, and 52,762,881 bytes above M2. Matching xz requires a further
+13.65% reduction. Encoding reached 1.59 MB/s and decoding reached 8.94 MB/s.
 
 Reproduce the RFC 0002 tensor artifact with:
 
