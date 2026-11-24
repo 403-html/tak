@@ -44,16 +44,19 @@ fn run() -> Result<(), String> {
     let global_bpe = divide(result.global_bits, result.matched);
     let feature_bpe = divide(result.feature_bits, result.matched);
     let suffix_bpe = divide(result.suffix_bits, result.matched);
+    let shared_position_bpe = divide(result.shared_position_bits, result.matched);
+    let position_specific_bpe = divide(result.position_specific_bits, result.matched);
     println!(
-        "input_bytes\tmatched_events\tcorrect_events\taccuracy\tglobal_bits_per_event\tfeature_bits_per_event\tfeature_reduction_bits_per_event\tsuffix_bits_per_event\tsuffix_reduction_bits_per_event"
+        "input_bytes\tmatched_events\tcorrect_events\taccuracy\tglobal_bits_per_event\tfeature_bits_per_event\tfeature_reduction_bits_per_event\tsuffix_bits_per_event\tsuffix_reduction_bits_per_event\tshared_position_bits_per_event\tposition_specific_bits_per_event\tposition_specific_reduction_bits_per_event"
     );
     println!(
-        "{input_len}\t{}\t{}\t{:.9}\t{global_bpe:.9}\t{feature_bpe:.9}\t{:.9}\t{suffix_bpe:.9}\t{:.9}",
+        "{input_len}\t{}\t{}\t{:.9}\t{global_bpe:.9}\t{feature_bpe:.9}\t{:.9}\t{suffix_bpe:.9}\t{:.9}\t{shared_position_bpe:.9}\t{position_specific_bpe:.9}\t{:.9}",
         result.matched,
         result.correct,
         ratio(result.correct, result.matched),
         global_bpe - feature_bpe,
         feature_bpe - suffix_bpe,
+        shared_position_bpe - position_specific_bpe,
     );
     Ok(())
 }
@@ -83,14 +86,18 @@ impl Default for Counts {
 }
 
 impl Counts {
-    fn bits(self, correct: bool) -> f64 {
+    fn probability(self, correct: bool) -> f64 {
         let total = self.correct + self.incorrect;
         let count = if correct {
             self.correct
         } else {
             self.incorrect
         };
-        f64::from(total).log2() - f64::from(count).log2()
+        f64::from(count) / f64::from(total)
+    }
+
+    fn bits(self, correct: bool) -> f64 {
+        -self.probability(correct).log2()
     }
 
     fn update(&mut self, correct: bool) {
@@ -108,12 +115,58 @@ struct ResultRow {
     global_bits: f64,
     feature_bits: f64,
     suffix_bits: f64,
+    shared_position_bits: f64,
+    position_specific_bits: f64,
+}
+
+#[derive(Clone, Copy)]
+struct PositionMixture {
+    log_weights: [f64; 8],
+}
+
+impl PositionMixture {
+    const fn new() -> Self {
+        Self {
+            log_weights: [0.0; 8],
+        }
+    }
+
+    fn code(&mut self, probabilities: [f64; 8]) -> f64 {
+        let maximum = self
+            .log_weights
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let weights = self.log_weights.map(|weight| (weight - maximum).exp());
+        let probability = weights
+            .iter()
+            .zip(probabilities)
+            .map(|(weight, expert)| weight * expert)
+            .sum::<f64>()
+            / weights.iter().sum::<f64>();
+        for (weight, expert) in self.log_weights.iter_mut().zip(probabilities) {
+            *weight += expert.ln();
+        }
+        let updated_maximum = self
+            .log_weights
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        for weight in &mut self.log_weights {
+            *weight -= updated_maximum;
+        }
+        -probability.log2()
+    }
 }
 
 fn diagnose(input: &[u8]) -> ResultRow {
     let mut table = vec![Entry::default(); TABLE_LEN];
     let mut global = Counts::default();
     let mut features = [[Counts::default(); 6]; 4];
+    let mut shared_bytes = vec![Counts::default(); 4 * 6 * 256];
+    let mut position_bytes = vec![Counts::default(); 8 * 4 * 6 * 256];
+    let mut shared_mixture = PositionMixture::new();
+    let mut position_mixture = PositionMixture::new();
     let mut history = 0_u64;
     let mut seen = 0_u8;
     let mut correct_run = 0_u32;
@@ -123,6 +176,8 @@ fn diagnose(input: &[u8]) -> ResultRow {
         global_bits: 0.0,
         feature_bits: 0.0,
         suffix_bits: 0.0,
+        shared_position_bits: 0.0,
+        position_specific_bits: 0.0,
     };
     for (position, &actual) in input.iter().enumerate() {
         let position = u32::try_from(position).expect("input length is bounded to u32");
@@ -151,9 +206,33 @@ fn diagnose(input: &[u8]) -> ResultRow {
                 result.global_bits += global.bits(is_correct);
                 result.feature_bits += features[distance_bucket][run_bucket].bits(is_correct);
                 result.suffix_bits += entry.reliability.bits(is_correct);
+                let suffix = history.to_be_bytes();
+                let shared_probabilities = std::array::from_fn(|suffix_position| {
+                    shared_bytes
+                        [shared_byte_index(distance_bucket, run_bucket, suffix[suffix_position])]
+                    .probability(is_correct)
+                });
+                let position_probabilities = std::array::from_fn(|suffix_position| {
+                    position_bytes[position_byte_index(
+                        suffix_position,
+                        distance_bucket,
+                        run_bucket,
+                        suffix[suffix_position],
+                    )]
+                    .probability(is_correct)
+                });
+                result.shared_position_bits += shared_mixture.code(shared_probabilities);
+                result.position_specific_bits += position_mixture.code(position_probabilities);
                 global.update(is_correct);
                 features[distance_bucket][run_bucket].update(is_correct);
                 entry.reliability.update(is_correct);
+                for (suffix_position, byte) in suffix.into_iter().enumerate() {
+                    shared_bytes[shared_byte_index(distance_bucket, run_bucket, byte)]
+                        .update(is_correct);
+                    position_bytes
+                        [position_byte_index(suffix_position, distance_bucket, run_bucket, byte)]
+                    .update(is_correct);
+                }
                 correct_run = if is_correct { correct_run + 1 } else { 0 };
             } else {
                 correct_run = 0;
@@ -176,6 +255,14 @@ fn diagnose(input: &[u8]) -> ResultRow {
         seen = seen.saturating_add(1).min(8);
     }
     result
+}
+
+fn shared_byte_index(distance: usize, run: usize, byte: u8) -> usize {
+    (distance * 6 + run) * 256 + usize::from(byte)
+}
+
+fn position_byte_index(position: usize, distance: usize, run: usize, byte: u8) -> usize {
+    position * 4 * 6 * 256 + shared_byte_index(distance, run, byte)
 }
 
 fn table_index(key: u64) -> usize {
@@ -208,5 +295,7 @@ mod tests {
         let result = diagnose(b"abcdefghXabcdefghXabcdefghY");
         assert_eq!(result.matched, 10);
         assert_eq!(result.correct, 9);
+        assert!(result.shared_position_bits.is_finite());
+        assert!(result.position_specific_bits.is_finite());
     }
 }

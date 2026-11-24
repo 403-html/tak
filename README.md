@@ -182,6 +182,15 @@ but still lost to the stronger classical control on every measured group.
 Quantization was accurate; representation quality and metadata were the
 failures. Higher ranks and more epochs are not justified by this experiment.
 
+RFC 0026 later measured one specific representation limitation rather than
+retrying rank. The shared RFC 0013 byte transition cannot specialize its
+mapping by suffix position. Position-specific classical tables improve a
+shared-position control on all five Silesia tails by 0.023 to 0.141 bits per
+matched event. Weighted loss is 0.4887 bits/event, slightly below the sparse
+exact-suffix control's 0.4979. This permits a new untied position-aware tensor
+design with both classical models as mandatory controls. It is not yet a
+tensor or compressed-size improvement.
+
 RFC 0014 returns to a classical entropy-coded LZ mechanism. Its fixed greedy
 parser passed four of five Silesia development groups with 0.2757 aggregate
 ideal bits per byte saved. Frozen Calgary validation remained positive but
