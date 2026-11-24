@@ -311,6 +311,11 @@ bytes and improved all five Silesia development files. On Calgary it saved
 fails the frozen 15-file transfer gate. Associativity and replacement tuning
 are prohibited, and enwik9 was not run.
 
+RFC 0029 tested learning the order-2 counts from literals while keeping
+match history. It lowered ideal literal cost on all five Silesia tails
+and on 10 of 18 Calgary files. The Calgary gate required 12 improvements.
+The experiment ended before artifact implementation.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console
