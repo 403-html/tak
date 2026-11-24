@@ -19,13 +19,19 @@ fn run() -> Result<(), String> {
     let path = args
         .first()
         .filter(|value| !value.starts_with("--"))
-        .ok_or("expected INPUT --rank R [--tail-bytes N] [--epochs N] [--learning-rate X]")?;
+        .ok_or("expected INPUT --rank R [--representation shared|modulated|untied] [--tail-bytes N] [--epochs N] [--learning-rate X]")?;
     let rank = option(&args, "--rank")
         .ok_or("--rank is required")?
         .parse::<usize>()
         .map_err(|_| "rank must be 1, 2, 4, or 8")?;
     if ![1, 2, 4, 8].contains(&rank) {
         return Err("rank must be 1, 2, 4, or 8".to_owned());
+    }
+    let representation = option(&args, "--representation")
+        .unwrap_or("shared")
+        .parse::<Representation>()?;
+    if representation != Representation::Shared && rank != 2 {
+        return Err("position-aware representations require rank 2".to_owned());
     }
     let epochs = option(&args, "--epochs")
         .unwrap_or("10")
@@ -70,7 +76,13 @@ fn run() -> Result<(), String> {
     }
 
     let start = Instant::now();
-    let model = Model::train(&training.events, rank, epochs, learning_rate);
+    let model = Model::train(
+        &training.events,
+        rank,
+        representation,
+        epochs,
+        learning_rate,
+    );
     let training_seconds = start.elapsed().as_secs_f64();
     let training_bpe = model.bits_per_event(&training.events);
     let float_bpe = model.bits_per_event(&evaluation.events);
@@ -82,10 +94,11 @@ fn run() -> Result<(), String> {
     let metadata_bpe = divide(f64::from(model_bits), evaluation.events.len());
 
     println!(
-        "rank\tinput_bytes\ttrain_bytes\teval_bytes\ttrain_events\teval_events\tepochs\tmodel_bytes\tglobal_bpe\tfeature_bpe\tsuffix_bpe\ttraining_bpe\tfloat_bpe\tquantized_bpe\tinteger_bpe\tmetadata_bpe\tinteger_with_metadata_bpe\ttraining_seconds"
+        "representation\trank\tinput_bytes\ttrain_bytes\teval_bytes\ttrain_events\teval_events\tepochs\tmodel_bytes\tglobal_bpe\tfeature_bpe\tsuffix_bpe\tshared_position_bpe\tposition_specific_bpe\ttraining_bpe\tfloat_bpe\tquantized_bpe\tinteger_bpe\tmetadata_bpe\tinteger_with_metadata_bpe\ttraining_seconds"
     );
     println!(
-        "{rank}\t{}\t{split}\t{}\t{}\t{}\t{epochs}\t{}\t{:.9}\t{:.9}\t{:.9}\t{training_bpe:.9}\t{float_bpe:.9}\t{quantized_bpe:.9}\t{integer_bpe:.9}\t{metadata_bpe:.9}\t{:.9}\t{training_seconds:.9}",
+        "{}\t{rank}\t{}\t{split}\t{}\t{}\t{}\t{epochs}\t{}\t{:.9}\t{:.9}\t{:.9}\t{:.9}\t{:.9}\t{training_bpe:.9}\t{float_bpe:.9}\t{quantized_bpe:.9}\t{integer_bpe:.9}\t{metadata_bpe:.9}\t{:.9}\t{training_seconds:.9}",
+        representation.name(),
         input.len(),
         input.len() - split,
         training.events.len(),
@@ -94,9 +107,41 @@ fn run() -> Result<(), String> {
         divide(evaluation.global_bits, evaluation.events.len()),
         divide(evaluation.feature_bits, evaluation.events.len()),
         divide(evaluation.suffix_bits, evaluation.events.len()),
+        divide(evaluation.shared_position_bits, evaluation.events.len()),
+        divide(evaluation.position_specific_bits, evaluation.events.len()),
         integer_bpe + metadata_bpe,
     );
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Representation {
+    Shared,
+    Modulated,
+    Untied,
+}
+
+impl Representation {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Shared => "shared",
+            Self::Modulated => "modulated",
+            Self::Untied => "untied",
+        }
+    }
+}
+
+impl std::str::FromStr for Representation {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "shared" => Ok(Self::Shared),
+            "modulated" => Ok(Self::Modulated),
+            "untied" => Ok(Self::Untied),
+            _ => Err("representation must be shared, modulated, or untied".to_owned()),
+        }
+    }
 }
 
 fn option<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
@@ -130,14 +175,18 @@ impl Default for Counts {
 }
 
 impl Counts {
-    fn bits(self, correct: bool) -> f64 {
+    fn probability(self, correct: bool) -> f64 {
         let total = self.correct + self.incorrect;
         let count = if correct {
             self.correct
         } else {
             self.incorrect
         };
-        f64::from(total).log2() - f64::from(count).log2()
+        f64::from(count) / f64::from(total)
+    }
+
+    fn bits(self, correct: bool) -> f64 {
+        -self.probability(correct).log2()
     }
 
     fn update(&mut self, correct: bool) {
@@ -162,12 +211,58 @@ struct EventSet {
     global_bits: f64,
     feature_bits: f64,
     suffix_bits: f64,
+    shared_position_bits: f64,
+    position_specific_bits: f64,
+}
+
+#[derive(Clone, Copy)]
+struct PositionMixture {
+    log_weights: [f64; 8],
+}
+
+impl PositionMixture {
+    const fn new() -> Self {
+        Self {
+            log_weights: [0.0; 8],
+        }
+    }
+
+    fn code(&mut self, probabilities: [f64; 8]) -> f64 {
+        let maximum = self
+            .log_weights
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let weights = self.log_weights.map(|weight| (weight - maximum).exp());
+        let probability = weights
+            .iter()
+            .zip(probabilities)
+            .map(|(weight, expert)| weight * expert)
+            .sum::<f64>()
+            / weights.iter().sum::<f64>();
+        for (weight, expert) in self.log_weights.iter_mut().zip(probabilities) {
+            *weight += expert.ln();
+        }
+        let updated_maximum = self
+            .log_weights
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        for weight in &mut self.log_weights {
+            *weight -= updated_maximum;
+        }
+        -probability.log2()
+    }
 }
 
 fn collect_events(input: &[u8], score_controls: bool) -> EventSet {
     let mut table = vec![MatchEntry::default(); TABLE_LEN];
     let mut global = Counts::default();
     let mut features = [[Counts::default(); 6]; 4];
+    let mut shared_bytes = vec![Counts::default(); 4 * 6 * 256];
+    let mut position_bytes = vec![Counts::default(); 8 * 4 * 6 * 256];
+    let mut shared_mixture = PositionMixture::new();
+    let mut position_mixture = PositionMixture::new();
     let mut history = 0_u64;
     let mut seen = 0_u8;
     let mut correct_run = 0_u32;
@@ -176,6 +271,8 @@ fn collect_events(input: &[u8], score_controls: bool) -> EventSet {
         global_bits: 0.0,
         feature_bits: 0.0,
         suffix_bits: 0.0,
+        shared_position_bits: 0.0,
+        position_specific_bits: 0.0,
     };
     for (position, &actual) in input.iter().enumerate() {
         let position = u32::try_from(position).expect("partition length is bounded to u32");
@@ -190,9 +287,30 @@ fn collect_events(input: &[u8], score_controls: bool) -> EventSet {
                     result.global_bits += global.bits(correct);
                     result.feature_bits += features[distance][run].bits(correct);
                     result.suffix_bits += entry.reliability.bits(correct);
+                    let suffix = history.to_be_bytes();
+                    let shared_probabilities = std::array::from_fn(|suffix_position| {
+                        shared_bytes[shared_byte_index(distance, run, suffix[suffix_position])]
+                            .probability(correct)
+                    });
+                    let position_probabilities = std::array::from_fn(|suffix_position| {
+                        position_bytes[position_byte_index(
+                            suffix_position,
+                            distance,
+                            run,
+                            suffix[suffix_position],
+                        )]
+                        .probability(correct)
+                    });
+                    result.shared_position_bits += shared_mixture.code(shared_probabilities);
+                    result.position_specific_bits += position_mixture.code(position_probabilities);
                     global.update(correct);
                     features[distance][run].update(correct);
                     entry.reliability.update(correct);
+                    for (suffix_position, byte) in suffix.into_iter().enumerate() {
+                        shared_bytes[shared_byte_index(distance, run, byte)].update(correct);
+                        position_bytes[position_byte_index(suffix_position, distance, run, byte)]
+                            .update(correct);
+                    }
                 }
                 result.events.push(Event {
                     distance,
@@ -224,6 +342,14 @@ fn collect_events(input: &[u8], score_controls: bool) -> EventSet {
     result
 }
 
+fn shared_byte_index(distance: usize, run: usize, byte: u8) -> usize {
+    (distance * 6 + run) * 256 + usize::from(byte)
+}
+
+fn position_byte_index(position: usize, distance: usize, run: usize, byte: u8) -> usize {
+    position * 4 * 6 * 256 + shared_byte_index(distance, run, byte)
+}
+
 fn distance_bucket(distance: u32) -> usize {
     match distance {
         0..=255 => 0,
@@ -251,17 +377,29 @@ fn table_index(key: u64) -> usize {
 
 struct Model {
     rank: usize,
+    representation: Representation,
     distance: Vec<f64>,
     run: Vec<f64>,
     byte: Vec<f64>,
+    position: Vec<f64>,
     outcome: Vec<f64>,
 }
 
 impl Model {
-    fn new(rank: usize) -> Self {
+    fn new(rank: usize, representation: Representation) -> Self {
         let distance = seeded_values(4 * rank, 0);
         let run = near_identity_cores(6, rank, 4 * rank);
-        let byte = near_identity_cores(256, rank, 4 * rank + 6 * rank * rank);
+        let byte_modes = if representation == Representation::Untied {
+            8 * 256
+        } else {
+            256
+        };
+        let byte = near_identity_cores(byte_modes, rank, 4 * rank + 6 * rank * rank);
+        let position = if representation == Representation::Modulated {
+            near_one_values(8 * rank * rank, 4 * rank + (6 + byte_modes) * rank * rank)
+        } else {
+            Vec::new()
+        };
         let outcome = if rank == 1 {
             vec![1.0, 1.0]
         } else {
@@ -276,17 +414,25 @@ impl Model {
         };
         Self {
             rank,
+            representation,
             distance,
             run,
             byte,
+            position,
             outcome,
         }
     }
 
-    fn train(events: &[Event], rank: usize, epochs: usize, learning_rate: f64) -> Self {
-        let mut model = Self::new(rank);
+    fn train(
+        events: &[Event],
+        rank: usize,
+        representation: Representation,
+        epochs: usize,
+        learning_rate: f64,
+    ) -> Self {
+        let mut model = Self::new(rank, representation);
         for epoch in 0..epochs {
-            let mut gradient = Gradient::new(rank);
+            let mut gradient = Gradient::new(&model);
             for event in events {
                 model.accumulate_gradient(event, &mut gradient);
             }
@@ -297,6 +443,7 @@ impl Model {
             update(&mut model.distance, &gradient.distance, rate);
             update(&mut model.run, &gradient.run, rate);
             update(&mut model.byte, &gradient.byte, rate);
+            update(&mut model.position, &gradient.position, rate);
             update(&mut model.outcome, &gradient.outcome, rate);
         }
         model
@@ -311,20 +458,14 @@ impl Model {
         states.push(state);
         sums.push(sum);
 
-        let modes = std::iter::once((event.run, &self.run[..])).chain(
-            event
-                .suffix
-                .iter()
-                .map(|&byte| (usize::from(byte), &self.byte[..])),
-        );
-        for (step, (mode, core)) in modes.enumerate() {
-            let dimensions = if step == 0 { 6 } else { 256 };
-            let (next, sum) = transition(
-                states.last().expect("distance state exists"),
-                core,
-                mode,
-                dimensions,
-                rank,
+        let (next, sum) = transition(&states[0], &self.run, event.run, 6, rank);
+        states.push(next);
+        sums.push(sum);
+        for (position, &byte) in event.suffix.iter().enumerate() {
+            let (next, sum) = self.byte_transition(
+                states.last().expect("previous state exists"),
+                position,
+                byte,
             );
             states.push(next);
             sums.push(sum);
@@ -350,27 +491,29 @@ impl Model {
         }
 
         for step in (0..9).rev() {
-            let (mode, core, core_gradient, dimensions) = if step == 0 {
-                (event.run, &self.run, &mut gradient.run, 6)
+            if step == 0 {
+                state_gradient = transition_backward(
+                    &states[step],
+                    &states[step + 1],
+                    sums[step + 1],
+                    &state_gradient,
+                    &self.run,
+                    &mut gradient.run,
+                    event.run,
+                    6,
+                    rank,
+                );
             } else {
-                (
-                    usize::from(event.suffix[step - 1]),
-                    &self.byte,
-                    &mut gradient.byte,
-                    256,
-                )
-            };
-            state_gradient = transition_backward(
-                &states[step],
-                &states[step + 1],
-                sums[step + 1],
-                &state_gradient,
-                core,
-                core_gradient,
-                mode,
-                dimensions,
-                rank,
-            );
+                state_gradient = self.byte_transition_backward(
+                    &states[step],
+                    &states[step + 1],
+                    sums[step + 1],
+                    &state_gradient,
+                    gradient,
+                    step - 1,
+                    event.suffix[step - 1],
+                );
+            }
         }
         let dot: f64 = state_gradient
             .iter()
@@ -394,11 +537,79 @@ impl Model {
         let start = event.distance * rank;
         let (mut state, _) = normalize(&self.distance[start..start + rank]);
         state = transition(&state, &self.run, event.run, 6, rank).0;
-        for &byte in &event.suffix {
-            state = transition(&state, &self.byte, usize::from(byte), 256, rank).0;
+        for (position, &byte) in event.suffix.iter().enumerate() {
+            state = self.byte_transition(&state, position, byte).0;
         }
         let scores = outcome_scores(&state, &self.outcome, rank);
         probability_bits(scores, event.correct)
+    }
+
+    fn byte_transition(&self, state: &[f64], position: usize, byte: u8) -> (Vec<f64>, f64) {
+        match self.representation {
+            Representation::Shared => {
+                transition(state, &self.byte, usize::from(byte), 256, self.rank)
+            }
+            Representation::Untied => transition(
+                state,
+                &self.byte,
+                position * 256 + usize::from(byte),
+                8 * 256,
+                self.rank,
+            ),
+            Representation::Modulated => {
+                modulated_transition(state, &self.byte, &self.position, position, byte, self.rank)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn byte_transition_backward(
+        &self,
+        previous: &[f64],
+        current: &[f64],
+        sum: f64,
+        current_gradient: &[f64],
+        gradient: &mut Gradient,
+        position: usize,
+        byte: u8,
+    ) -> Vec<f64> {
+        match self.representation {
+            Representation::Shared => transition_backward(
+                previous,
+                current,
+                sum,
+                current_gradient,
+                &self.byte,
+                &mut gradient.byte,
+                usize::from(byte),
+                256,
+                self.rank,
+            ),
+            Representation::Untied => transition_backward(
+                previous,
+                current,
+                sum,
+                current_gradient,
+                &self.byte,
+                &mut gradient.byte,
+                position * 256 + usize::from(byte),
+                8 * 256,
+                self.rank,
+            ),
+            Representation::Modulated => modulated_transition_backward(
+                previous,
+                current,
+                sum,
+                current_gradient,
+                &self.byte,
+                &self.position,
+                &mut gradient.byte,
+                &mut gradient.position,
+                position,
+                byte,
+                self.rank,
+            ),
+        }
     }
 }
 
@@ -429,20 +640,29 @@ fn near_identity_cores(modes: usize, rank: usize, offset: usize) -> Vec<f64> {
     values
 }
 
+fn near_one_values(length: usize, offset: usize) -> Vec<f64> {
+    seeded_values(length, offset)
+        .into_iter()
+        .map(|value| 0.95 + value * 0.05)
+        .collect()
+}
+
 struct Gradient {
     distance: Vec<f64>,
     run: Vec<f64>,
     byte: Vec<f64>,
+    position: Vec<f64>,
     outcome: Vec<f64>,
 }
 
 impl Gradient {
-    fn new(rank: usize) -> Self {
+    fn new(model: &Model) -> Self {
         Self {
-            distance: vec![0.0; 4 * rank],
-            run: vec![0.0; 6 * rank * rank],
-            byte: vec![0.0; 256 * rank * rank],
-            outcome: vec![0.0; 2 * rank],
+            distance: vec![0.0; model.distance.len()],
+            run: vec![0.0; model.run.len()],
+            byte: vec![0.0; model.byte.len()],
+            position: vec![0.0; model.position.len()],
+            outcome: vec![0.0; model.outcome.len()],
         }
     }
 }
@@ -462,9 +682,33 @@ fn transition(
     debug_assert!(mode < dimensions);
     let start = mode * rank * rank;
     let mut next = vec![0.0; rank];
-    for right in 0..rank {
-        next[right] = (0..rank)
+    for (right, value) in next.iter_mut().enumerate() {
+        *value = (0..rank)
             .map(|left| state[left] * core[start + left * rank + right])
+            .sum();
+    }
+    normalize(&next)
+}
+
+fn modulated_transition(
+    state: &[f64],
+    byte_core: &[f64],
+    position_core: &[f64],
+    position: usize,
+    byte: u8,
+    rank: usize,
+) -> (Vec<f64>, f64) {
+    let byte_start = usize::from(byte) * rank * rank;
+    let position_start = position * rank * rank;
+    let mut next = vec![0.0; rank];
+    for (right, value) in next.iter_mut().enumerate() {
+        *value = (0..rank)
+            .map(|left| {
+                let offset = left * rank + right;
+                state[left]
+                    * byte_core[byte_start + offset]
+                    * position_core[position_start + offset]
+            })
             .sum();
     }
     normalize(&next)
@@ -504,6 +748,47 @@ fn transition_backward(
     previous_gradient
 }
 
+#[allow(clippy::too_many_arguments)]
+fn modulated_transition_backward(
+    previous: &[f64],
+    current: &[f64],
+    sum: f64,
+    current_gradient: &[f64],
+    byte_core: &[f64],
+    position_core: &[f64],
+    byte_gradient: &mut [f64],
+    position_gradient: &mut [f64],
+    position: usize,
+    byte: u8,
+    rank: usize,
+) -> Vec<f64> {
+    let dot: f64 = current_gradient
+        .iter()
+        .zip(current)
+        .map(|(gradient, state)| gradient * state)
+        .sum();
+    let normalized_gradient: Vec<f64> = current_gradient
+        .iter()
+        .map(|gradient| (gradient - dot) / sum)
+        .collect();
+    let byte_start = usize::from(byte) * rank * rank;
+    let position_start = position * rank * rank;
+    let mut previous_gradient = vec![0.0; rank];
+    for left in 0..rank {
+        for (right, &derivative) in normalized_gradient.iter().enumerate() {
+            let offset = left * rank + right;
+            let byte_index = byte_start + offset;
+            let position_index = position_start + offset;
+            let byte_value = byte_core[byte_index];
+            let position_value = position_core[position_index];
+            byte_gradient[byte_index] += previous[left] * position_value * derivative;
+            position_gradient[position_index] += previous[left] * byte_value * derivative;
+            previous_gradient[left] += byte_value * position_value * derivative;
+        }
+    }
+    previous_gradient
+}
+
 fn outcome_scores(state: &[f64], outcome: &[f64], rank: usize) -> [f64; 2] {
     let mut scores = [0.0; 2];
     for hidden in 0..rank {
@@ -528,9 +813,11 @@ fn update(values: &mut [f64], gradient: &[f64], rate: f64) {
 
 struct QuantizedModel {
     rank: usize,
+    representation: Representation,
     distance: Vec<u16>,
     run: Vec<u16>,
     byte: Vec<u16>,
+    position: Vec<u16>,
     outcome: Vec<u16>,
 }
 
@@ -538,15 +825,22 @@ impl QuantizedModel {
     fn from_float(model: &Model) -> Self {
         Self {
             rank: model.rank,
+            representation: model.representation,
             distance: quantize(&model.distance),
             run: quantize(&model.run),
             byte: quantize(&model.byte),
+            position: quantize(&model.position),
             outcome: quantize(&model.outcome),
         }
     }
 
     fn model_bytes(&self) -> usize {
-        (self.distance.len() + self.run.len() + self.byte.len() + self.outcome.len()) * 2
+        (self.distance.len()
+            + self.run.len()
+            + self.byte.len()
+            + self.position.len()
+            + self.outcome.len())
+            * 2
     }
 
     fn float_bits_per_event(&self, events: &[Event]) -> f64 {
@@ -568,8 +862,8 @@ impl QuantizedModel {
             .collect();
         let (mut state, _) = normalize(&values);
         state = quantized_float_transition(&state, &self.run, event.run, rank);
-        for &byte in &event.suffix {
-            state = quantized_float_transition(&state, &self.byte, usize::from(byte), rank);
+        for (position, &byte) in event.suffix.iter().enumerate() {
+            state = self.float_byte_transition(&state, position, byte);
         }
         let outcome: Vec<f64> = self.outcome.iter().map(|&value| f64::from(value)).collect();
         probability_bits(outcome_scores(&state, &outcome, rank), event.correct)
@@ -595,8 +889,8 @@ impl QuantizedModel {
                 .collect::<Vec<_>>(),
         );
         state = integer_transition(&state, &self.run, event.run, rank);
-        for &byte in &event.suffix {
-            state = integer_transition(&state, &self.byte, usize::from(byte), rank);
+        for (position, &byte) in event.suffix.iter().enumerate() {
+            state = self.integer_byte_transition(&state, position, byte);
         }
         let mut scores = [0_u64; 2];
         for (hidden, &hidden_state) in state.iter().enumerate() {
@@ -606,10 +900,57 @@ impl QuantizedModel {
         }
         integer_probability_bits(scores, event.correct)
     }
+
+    fn float_byte_transition(&self, state: &[f64], position: usize, byte: u8) -> Vec<f64> {
+        match self.representation {
+            Representation::Shared => {
+                quantized_float_transition(state, &self.byte, usize::from(byte), self.rank)
+            }
+            Representation::Untied => quantized_float_transition(
+                state,
+                &self.byte,
+                position * 256 + usize::from(byte),
+                self.rank,
+            ),
+            Representation::Modulated => quantized_float_modulated_transition(
+                state,
+                &self.byte,
+                &self.position,
+                position,
+                byte,
+                self.rank,
+            ),
+        }
+    }
+
+    fn integer_byte_transition(&self, state: &[u16], position: usize, byte: u8) -> Vec<u16> {
+        match self.representation {
+            Representation::Shared => {
+                integer_transition(state, &self.byte, usize::from(byte), self.rank)
+            }
+            Representation::Untied => integer_transition(
+                state,
+                &self.byte,
+                position * 256 + usize::from(byte),
+                self.rank,
+            ),
+            Representation::Modulated => integer_modulated_transition(
+                state,
+                &self.byte,
+                &self.position,
+                position,
+                byte,
+                self.rank,
+            ),
+        }
+    }
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn quantize(values: &[f64]) -> Vec<u16> {
+    if values.is_empty() {
+        return Vec::new();
+    }
     let maximum = values.iter().copied().fold(0.0_f64, f64::max);
     values
         .iter()
@@ -623,9 +964,33 @@ fn quantize(values: &[f64]) -> Vec<u16> {
 fn quantized_float_transition(state: &[f64], core: &[u16], mode: usize, rank: usize) -> Vec<f64> {
     let start = mode * rank * rank;
     let mut next = vec![0.0; rank];
-    for right in 0..rank {
-        next[right] = (0..rank)
+    for (right, value) in next.iter_mut().enumerate() {
+        *value = (0..rank)
             .map(|left| state[left] * f64::from(core[start + left * rank + right]))
+            .sum();
+    }
+    normalize(&next).0
+}
+
+fn quantized_float_modulated_transition(
+    state: &[f64],
+    byte_core: &[u16],
+    position_core: &[u16],
+    position: usize,
+    byte: u8,
+    rank: usize,
+) -> Vec<f64> {
+    let byte_start = usize::from(byte) * rank * rank;
+    let position_start = position * rank * rank;
+    let mut next = vec![0.0; rank];
+    for (right, value) in next.iter_mut().enumerate() {
+        *value = (0..rank)
+            .map(|left| {
+                let offset = left * rank + right;
+                state[left]
+                    * f64::from(byte_core[byte_start + offset])
+                    * f64::from(position_core[position_start + offset])
+            })
             .sum();
     }
     normalize(&next).0
@@ -637,6 +1002,30 @@ fn integer_transition(state: &[u16], core: &[u16], mode: usize, rank: usize) -> 
     for right in 0..rank {
         next[right] = (0..rank)
             .map(|left| u64::from(state[left]) * u64::from(core[start + left * rank + right]))
+            .sum();
+    }
+    integer_normalize(&next)
+}
+
+fn integer_modulated_transition(
+    state: &[u16],
+    byte_core: &[u16],
+    position_core: &[u16],
+    position: usize,
+    byte: u8,
+    rank: usize,
+) -> Vec<u16> {
+    let byte_start = usize::from(byte) * rank * rank;
+    let position_start = position * rank * rank;
+    let mut next = vec![0_u64; rank];
+    for (right, value) in next.iter_mut().enumerate() {
+        *value = (0..rank)
+            .map(|left| {
+                let offset = left * rank + right;
+                u64::from(state[left])
+                    * u64::from(byte_core[byte_start + offset])
+                    * u64::from(position_core[position_start + offset])
+            })
             .sum();
     }
     integer_normalize(&next)
@@ -671,7 +1060,7 @@ fn divide(value: f64, events: usize) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Model, QuantizedModel, collect_events};
+    use super::{Model, QuantizedModel, Representation, collect_events};
 
     #[test]
     fn every_rank_produces_finite_losses_and_expected_metadata() {
@@ -679,7 +1068,7 @@ mod tests {
         let training = collect_events(&input[..input.len() * 9 / 10], false);
         let evaluation = collect_events(&input[input.len() * 9 / 10..], true);
         for (rank, bytes) in [(1, 536), (2, 2_120), (4, 8_432), (8, 33_632)] {
-            let model = Model::train(&training.events, rank, 1, 0.05);
+            let model = Model::train(&training.events, rank, Representation::Shared, 1, 0.05);
             let quantized = QuantizedModel::from_float(&model);
             assert_eq!(quantized.model_bytes(), bytes);
             assert!(model.bits_per_event(&evaluation.events).is_finite());
@@ -688,6 +1077,27 @@ mod tests {
                     .float_bits_per_event(&evaluation.events)
                     .is_finite()
             );
+            assert!(
+                quantized
+                    .integer_bits_per_event(&evaluation.events)
+                    .is_finite()
+            );
+        }
+    }
+
+    #[test]
+    fn position_aware_models_have_expected_metadata() {
+        let input = b"abcdefghXabcdefghXabcdefghY".repeat(100);
+        let training = collect_events(&input[..input.len() * 9 / 10], false);
+        let evaluation = collect_events(&input[input.len() * 9 / 10..], true);
+        for (representation, bytes) in [
+            (Representation::Modulated, 2_184),
+            (Representation::Untied, 16_456),
+        ] {
+            let model = Model::train(&training.events, 2, representation, 1, 0.05);
+            let quantized = QuantizedModel::from_float(&model);
+            assert_eq!(quantized.model_bytes(), bytes);
+            assert!(model.bits_per_event(&evaluation.events).is_finite());
             assert!(
                 quantized
                     .integer_bits_per_event(&evaluation.events)

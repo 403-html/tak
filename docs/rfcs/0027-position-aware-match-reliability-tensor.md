@@ -1,6 +1,6 @@
 # RFC 0027: Position-aware match-reliability tensor
 
-- Status: Proposed
+- Status: Rejected
 - Date: 2026-11-24
 - Scope: Tensor representation gate
 - Format change: None
@@ -184,4 +184,29 @@ Report, for every measured file and candidate:
 Use one screening sample only for the representation gate. Label its time and
 memory measurements non-publishable. If a candidate reaches an artifact,
 follow the repository benchmark methodology and verify exact byte restoration.
+
+## 10. Result
+
+Reject both candidates. Dickens, XML, and OOffice all fail the
+full-precision representation gate, so the required three passes are
+unreachable. Stop without Samba or Mozilla.
+
+The fully untied tensor improves the frozen shared tensor on all three files.
+Its weighted loss is 0.564542 rather than 0.590796 bits per event. This shows
+that positional specialization has value inside the tested tensor family.
+The position-specific classical control is still stronger on every file. Its
+weighted loss is 0.467389 bits per event.
+
+The position-modulated tensor has weighted loss of 0.590531 bits per event.
+It does not retain the untied model's improvement. Quantization and integer
+contraction add negligible loss, but metadata makes both complete diagnostics
+substantially worse.
+
+This result rejects the exact rank-2 position-modulated and fully untied MPS
+representations under the frozen optimizer. It does not rule out tensor
+networks or higher-order interactions in general. Do not retry with a higher
+rank or optimizer tuning alone.
+
+See
+`research/experiments/2026-11-24-rejected-position-aware-tensor.md`.
 
