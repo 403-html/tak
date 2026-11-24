@@ -115,6 +115,10 @@ path = "src/match_distance_literal_main.rs"
 name = "tak-lz-coalesced-gate"
 path = "src/lz_coalesced_main.rs"
 
+[[bin]]
+name = "tak-length-distance"
+path = "src/length_distance_main.rs"
+
 [dependencies]
 tak-codecs = { path = "../tak-codecs" }
 tak-context = { path = "../tak-context" }

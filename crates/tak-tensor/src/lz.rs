@@ -200,6 +200,21 @@ pub struct MatchDistanceLiteralProfile {
     pub candidate_bits: f64,
 }
 
+/// Ideal-bit diagnostic for RFC 0025's length-conditioned distance buckets.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LengthConditionedDistanceProfile {
+    /// Number of bytes in the complete input.
+    pub input_bytes: usize,
+    /// Number of match blocks in the RFC 0019 parse.
+    pub match_blocks: usize,
+    /// Ideal distance bucket and remainder bits from RFC 0019.
+    pub control_bits: f64,
+    /// Ideal distance bucket and remainder bits from four length classes.
+    pub candidate_bits: f64,
+    /// Match counts for lengths 8, 9, 10, and 11 or more.
+    pub matches_by_class: [usize; 4],
+}
+
 /// Errors produced by bounded RFC 0014 streaming decode.
 #[derive(Debug)]
 pub enum LzStreamError {
@@ -585,6 +600,41 @@ pub fn profile_match_distance_literal(input: &[u8]) -> MatchDistanceLiteralProfi
         }
     }
     debug_assert_eq!(position, input.len());
+    result
+}
+
+/// Profiles RFC 0025's current-length-conditioned distance distributions.
+#[must_use]
+pub fn profile_length_conditioned_distance(input: &[u8]) -> LengthConditionedDistanceProfile {
+    let blocks = priced::parse_priced(input);
+    let mut global = AdaptiveDistribution::new(32);
+    let mut by_length = std::array::from_fn::<_, 4, _>(|_| AdaptiveDistribution::new(32));
+    let mut result = LengthConditionedDistanceProfile {
+        input_bytes: input.len(),
+        ..LengthConditionedDistanceProfile::default()
+    };
+
+    for block in blocks {
+        let Block::Match { length, distance } = block else {
+            continue;
+        };
+        let class = (length - MIN_MATCH).min(3);
+        let bucket_u32 = distance.ilog2();
+        let bucket = usize::try_from(bucket_u32).unwrap_or(0);
+        let remainder_bits = f64::from(bucket_u32);
+        let (low, high, total) = global.range(bucket);
+        result.control_bits +=
+            f64::from(total).log2() - f64::from(high - low).log2() + remainder_bits;
+        global.update(bucket);
+
+        let model = &mut by_length[class];
+        let (low, high, total) = model.range(bucket);
+        result.candidate_bits +=
+            f64::from(total).log2() - f64::from(high - low).log2() + remainder_bits;
+        model.update(bucket);
+        result.match_blocks += 1;
+        result.matches_by_class[class] += 1;
+    }
     result
 }
 
@@ -3308,8 +3358,8 @@ mod tests {
         encode_lz_short_artifact, encode_lz_stream, encode_lz_structural_artifact,
         encode_lz_structural_repriced_artifact, encode_lz_structural_stream,
         encode_lz_two_candidate_artifact, encode_lz_two_candidate_stream, literal_phase,
-        profile_literal_phase_order2, profile_lz_priced_residual, profile_match_distance_literal,
-        short_match,
+        profile_length_conditioned_distance, profile_literal_phase_order2,
+        profile_lz_priced_residual, profile_match_distance_literal, short_match,
     };
     use crate::HEADER_LEN;
 
@@ -3711,6 +3761,21 @@ mod tests {
         assert!(profile.source_hits <= profile.eligible_literals);
         assert!(profile.candidate_bits.is_finite());
         assert!((profile.control_bits - established.integer_phase_literal_bits).abs() < 1e-6);
+    }
+
+    #[test]
+    fn length_conditioned_distance_profile_uses_established_control() {
+        let input = b"abcdefghXabcdefghYabcdefghZ".repeat(1_000);
+        let profile = profile_length_conditioned_distance(&input);
+        let established = profile_lz_priced_residual(&input);
+        assert_eq!(profile.input_bytes, input.len());
+        assert_eq!(profile.match_blocks, established.match_blocks);
+        assert_eq!(
+            profile.matches_by_class.iter().sum::<usize>(),
+            profile.match_blocks
+        );
+        assert!(profile.candidate_bits.is_finite());
+        assert!((profile.control_bits - established.distance_bits).abs() < 1e-6);
     }
 
     #[test]

@@ -12,15 +12,17 @@ mod third_order;
 mod third_order_backoff;
 
 pub use lz::{
-    LiteralPhaseOrder2Profile, LzEncodeStats, LzError, LzPricedResidualProfile, LzStreamError,
-    LzStreamStats, MatchDistanceLiteralProfile, decode_lz_artifact, decode_lz_phase_artifact,
-    decode_lz_phase_stream, decode_lz_short_artifact, decode_lz_stream,
-    decode_lz_structural_artifact, decode_lz_structural_stream, encode_lz_artifact,
-    encode_lz_coalesced_artifact, encode_lz_phase_artifact, encode_lz_phase_stream,
-    encode_lz_priced_artifact, encode_lz_priced_stream, encode_lz_short_artifact, encode_lz_stream,
-    encode_lz_structural_artifact, encode_lz_structural_repriced_artifact,
-    encode_lz_structural_stream, encode_lz_two_candidate_artifact, encode_lz_two_candidate_stream,
-    profile_literal_phase_order2, profile_lz_priced_residual, profile_match_distance_literal,
+    LengthConditionedDistanceProfile, LiteralPhaseOrder2Profile, LzEncodeStats, LzError,
+    LzPricedResidualProfile, LzStreamError, LzStreamStats, MatchDistanceLiteralProfile,
+    decode_lz_artifact, decode_lz_phase_artifact, decode_lz_phase_stream, decode_lz_short_artifact,
+    decode_lz_stream, decode_lz_structural_artifact, decode_lz_structural_stream,
+    encode_lz_artifact, encode_lz_coalesced_artifact, encode_lz_phase_artifact,
+    encode_lz_phase_stream, encode_lz_priced_artifact, encode_lz_priced_stream,
+    encode_lz_short_artifact, encode_lz_stream, encode_lz_structural_artifact,
+    encode_lz_structural_repriced_artifact, encode_lz_structural_stream,
+    encode_lz_two_candidate_artifact, encode_lz_two_candidate_stream,
+    profile_length_conditioned_distance, profile_literal_phase_order2, profile_lz_priced_residual,
+    profile_match_distance_literal,
 };
 pub use match8::{
     decode_match8_artifact, decode_match8_stream, encode_match8_artifact, encode_match8_stream,
