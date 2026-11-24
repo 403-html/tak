@@ -10,6 +10,7 @@ mod priced;
 
 const MAGIC: &[u8; 4] = b"TKLZ";
 const PHASE_MAGIC: &[u8; 4] = b"TKP7";
+const SHORT_MAGIC: &[u8; 4] = b"TKS3";
 const TABLE_BITS: u32 = 20;
 const TABLE_LEN: usize = 1 << TABLE_BITS;
 const HASH_MULTIPLIER: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -92,6 +93,14 @@ pub struct LzPricedResidualProfile {
     pub global_remainder_model_bits: f64,
     /// Ideal remainder cost from adaptive models keyed by bucket and bit position.
     pub bucket_remainder_model_bits: f64,
+    /// Nonoverlapping profitable 3-to-7-byte match opportunities in literal blocks.
+    pub short_match_events: usize,
+    /// Literal bytes covered by selected short-match opportunities.
+    pub short_match_bytes: usize,
+    /// RFC 0017 literal bits covered by selected short-match opportunities.
+    pub short_match_literal_bits: f64,
+    /// Estimated type, length, and distance bits for selected short matches.
+    pub short_match_token_bits: f64,
     /// Matches that repeat the immediately preceding distance.
     pub repeat0_matches: usize,
     /// Distance bits used by immediately repeated distances.
@@ -212,6 +221,13 @@ pub fn encode_lz_phase_artifact(input: &[u8]) -> Vec<u8> {
     )
 }
 
+/// Encodes an RFC 0018 short-match research artifact.
+#[must_use]
+pub fn encode_lz_short_artifact(input: &[u8]) -> Vec<u8> {
+    let blocks = priced::parse_priced(input);
+    encode_short_blocks(input, short_blocks(input, &blocks))
+}
+
 /// Encodes an RFC 0016 price-based parser artifact with bounded memory.
 ///
 /// The artifact is byte-identical to [`encode_lz_priced_artifact`].
@@ -258,6 +274,7 @@ pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
         input_bytes: input.len(),
         ..LzPricedResidualProfile::default()
     };
+    profile_short_matches(input, &blocks, &mut result);
     let mut distances = AdaptiveDistribution::new(32);
     let mut remainder_models = DistanceRemainderModels::new();
     let mut recent = Vec::with_capacity(REPEAT_SLOTS);
@@ -358,6 +375,185 @@ pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
 struct DistanceRemainderModels {
     global: Vec<AdaptiveDistribution>,
     by_bucket: Vec<AdaptiveDistribution>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ShortEntry {
+    key: u32,
+    position: u32,
+    occupied: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ShortSelection {
+    position: usize,
+    length: usize,
+    distance: usize,
+    literal_bits: f64,
+    token_bits: f64,
+}
+
+fn profile_short_matches(input: &[u8], blocks: &[Block], result: &mut LzPricedResidualProfile) {
+    for selection in short_selections(input, blocks) {
+        result.short_match_events += 1;
+        result.short_match_bytes += selection.length;
+        result.short_match_literal_bits += selection.literal_bits;
+        result.short_match_token_bits += selection.token_bits;
+    }
+}
+
+fn short_selections(input: &[u8], blocks: &[Block]) -> Vec<ShortSelection> {
+    let literal_costs = rfc0017_literal_costs(input, blocks);
+    let mut table = vec![ShortEntry::default(); TABLE_LEN];
+    let mut selections = Vec::new();
+    let mut position = 0;
+    for &block in blocks {
+        let literal_end = match block {
+            Block::Literal { length, .. } | Block::Match { length, .. } => position + length,
+        };
+        let mut selected_until = position;
+        while position < literal_end {
+            let is_literal = matches!(block, Block::Literal { .. });
+            if is_literal && position >= selected_until {
+                if let Some((length, distance)) = short_match(input, position, literal_end, &table)
+                {
+                    let literal_bits: f64 = literal_costs[position..position + length].iter().sum();
+                    let token_bits = 5.0 + f64::from(distance.ilog2());
+                    if literal_bits > token_bits {
+                        selections.push(ShortSelection {
+                            position,
+                            length,
+                            distance,
+                            literal_bits,
+                            token_bits,
+                        });
+                        selected_until = position + length;
+                    }
+                }
+            }
+            insert_short(input, position, &mut table);
+            position += 1;
+        }
+    }
+    selections
+}
+
+fn short_blocks(input: &[u8], blocks: &[Block]) -> Vec<ShortBlock> {
+    let selections = short_selections(input, blocks);
+    let mut selection_index = 0;
+    let mut result = Vec::with_capacity(blocks.len() + selections.len() * 2);
+    for &block in blocks {
+        match block {
+            Block::Literal { start, length } => {
+                let end = start + length;
+                let mut cursor = start;
+                while let Some(selection) = selections.get(selection_index) {
+                    if selection.position >= end {
+                        break;
+                    }
+                    if cursor < selection.position {
+                        result.push(ShortBlock::Literal {
+                            start: cursor,
+                            length: selection.position - cursor,
+                        });
+                    }
+                    result.push(ShortBlock::ShortMatch {
+                        length: selection.length,
+                        distance: selection.distance,
+                    });
+                    cursor = selection.position + selection.length;
+                    selection_index += 1;
+                }
+                if cursor < end {
+                    result.push(ShortBlock::Literal {
+                        start: cursor,
+                        length: end - cursor,
+                    });
+                }
+            }
+            Block::Match { length, distance } => {
+                result.push(ShortBlock::LongMatch { length, distance });
+            }
+        }
+    }
+    debug_assert_eq!(selection_index, selections.len());
+    result
+}
+
+fn rfc0017_literal_costs(input: &[u8], blocks: &[Block]) -> Vec<f64> {
+    let mut costs = vec![0.0; input.len()];
+    let mut model = PhaseMatchModel::new();
+    let mut position = 0;
+    for &block in blocks {
+        match block {
+            Block::Literal { length, .. } => {
+                for offset in 0..length {
+                    model.set_phase(Some(literal_phase(offset)));
+                    let byte = input[position];
+                    let (low, high, total) = model.range(byte);
+                    costs[position] = f64::from(total).log2() - f64::from(high - low).log2();
+                    model.update(byte);
+                    position += 1;
+                }
+            }
+            Block::Match { length, .. } => {
+                model.set_phase(None);
+                for &byte in &input[position..position + length] {
+                    model.update(byte);
+                }
+                position += length;
+            }
+        }
+    }
+    costs
+}
+
+fn short_match(
+    input: &[u8],
+    position: usize,
+    literal_end: usize,
+    table: &[ShortEntry],
+) -> Option<(usize, usize)> {
+    let key = short_key(input, position)?;
+    let entry = table[short_table_index(key)];
+    if !entry.occupied || entry.key != key {
+        return None;
+    }
+    let source = usize::try_from(entry.position).ok()?;
+    let distance = position.checked_sub(source)?;
+    if distance == 0 || distance > MAX_DISTANCE {
+        return None;
+    }
+    let limit = 7.min(literal_end - position);
+    if limit < 3 {
+        return None;
+    }
+    let mut length = 3;
+    while length < limit && input[source + length] == input[position + length] {
+        length += 1;
+    }
+    Some((length, distance))
+}
+
+fn insert_short(input: &[u8], position: usize, table: &mut [ShortEntry]) {
+    let Some(key) = short_key(input, position) else {
+        return;
+    };
+    table[short_table_index(key)] = ShortEntry {
+        key,
+        position: u32::try_from(position).expect("input is bounded to u32"),
+        occupied: true,
+    };
+}
+
+fn short_key(input: &[u8], position: usize) -> Option<u32> {
+    let bytes = input.get(position..position + 3)?;
+    Some((u32::from(bytes[0]) << 16) | (u32::from(bytes[1]) << 8) | u32::from(bytes[2]))
+}
+
+fn short_table_index(key: u32) -> usize {
+    usize::try_from(key.wrapping_mul(0x9e37_79b9) >> (32 - TABLE_BITS))
+        .expect("20-bit index fits usize")
 }
 
 impl DistanceRemainderModels {
@@ -919,6 +1115,66 @@ fn encode_blocks_with_model(
     artifact
 }
 
+fn encode_short_blocks(input: &[u8], blocks: Vec<ShortBlock>) -> Vec<u8> {
+    let mut encoder = RangeEncoder::new();
+    let mut model = PhaseMatchModel::new();
+    let mut types = AdaptiveDistribution::new(4);
+    let mut literal_lengths = AdaptiveDistribution::new(32);
+    let mut match_lengths = AdaptiveDistribution::new(32);
+    let mut short_lengths = AdaptiveDistribution::new(5);
+    let mut distances = AdaptiveDistribution::new(32);
+    let mut position = 0;
+
+    for block in blocks {
+        match block {
+            ShortBlock::Literal { start, length } => {
+                debug_assert_eq!(start, position);
+                encode_adaptive(&mut encoder, &mut types, 0);
+                encode_bucket(&mut encoder, &mut literal_lengths, length - 1);
+                for (offset, &byte) in input[start..start + length].iter().enumerate() {
+                    model.set_phase(Some(literal_phase(offset)));
+                    let (low, high, total) = model.range(byte);
+                    encoder.encode(low, high, total);
+                    model.update(byte);
+                }
+                position += length;
+            }
+            ShortBlock::LongMatch { length, distance } => {
+                model.set_phase(None);
+                encode_adaptive(&mut encoder, &mut types, 1);
+                encode_bucket(&mut encoder, &mut match_lengths, length - MIN_MATCH);
+                encode_bucket(&mut encoder, &mut distances, distance - 1);
+                for &byte in &input[position..position + length] {
+                    model.update(byte);
+                }
+                position += length;
+            }
+            ShortBlock::ShortMatch { length, distance } => {
+                model.set_phase(None);
+                encode_adaptive(&mut encoder, &mut types, 2);
+                encode_adaptive(&mut encoder, &mut short_lengths, length - 3);
+                encode_bucket(&mut encoder, &mut distances, distance - 1);
+                for &byte in &input[position..position + length] {
+                    model.update(byte);
+                }
+                position += length;
+            }
+        }
+    }
+    debug_assert_eq!(position, input.len());
+    encode_adaptive(&mut encoder, &mut types, 3);
+    let payload = encoder.finish();
+
+    let mut artifact = Vec::with_capacity(HEADER_LEN + payload.len());
+    artifact.extend_from_slice(SHORT_MAGIC);
+    artifact.extend_from_slice(&[0; 4]);
+    artifact.extend_from_slice(&(input.len() as u64).to_le_bytes());
+    artifact.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    artifact.extend_from_slice(&crc32(input).to_le_bytes());
+    artifact.extend_from_slice(&payload);
+    artifact
+}
+
 fn stream_crc(input: &mut (impl Read + Seek), input_len: u64) -> Result<Crc32, LzStreamError> {
     input.seek(SeekFrom::Start(0))?;
     let mut crc = Crc32::new();
@@ -1086,6 +1342,121 @@ pub fn decode_lz_artifact(artifact: &[u8], max_output: u64) -> Result<Vec<u8>, L
 /// invalid match extents, or a checksum mismatch.
 pub fn decode_lz_phase_artifact(artifact: &[u8], max_output: u64) -> Result<Vec<u8>, LzError> {
     decode_lz_artifact_with_model(artifact, max_output, *PHASE_MAGIC, PhaseMatchModel::new())
+}
+
+/// Decodes an RFC 0018 short-match research artifact.
+///
+/// # Errors
+///
+/// Returns an error for invalid fields, excessive output, invalid arithmetic,
+/// invalid match extents, or a checksum mismatch.
+pub fn decode_lz_short_artifact(artifact: &[u8], max_output: u64) -> Result<Vec<u8>, LzError> {
+    if artifact.len() < HEADER_LEN || artifact[..4] != *SHORT_MAGIC || artifact[4..8] != [0; 4] {
+        return Err(LzError::InvalidArtifact);
+    }
+    let output_len = read_u64(&artifact[8..16]);
+    if output_len > max_output {
+        return Err(LzError::OutputLimitExceeded);
+    }
+    let output_len = usize::try_from(output_len).map_err(|_| LzError::InvalidArtifact)?;
+    let payload_len =
+        usize::try_from(read_u64(&artifact[16..24])).map_err(|_| LzError::InvalidArtifact)?;
+    if artifact.len()
+        != HEADER_LEN
+            .checked_add(payload_len)
+            .ok_or(LzError::InvalidArtifact)?
+    {
+        return Err(LzError::InvalidArtifact);
+    }
+    let expected_crc = u32::from_le_bytes([artifact[24], artifact[25], artifact[26], artifact[27]]);
+    let mut decoder = RangeDecoder::new(&artifact[HEADER_LEN..]);
+    let mut model = PhaseMatchModel::new();
+    let mut types = AdaptiveDistribution::new(4);
+    let mut literal_lengths = AdaptiveDistribution::new(32);
+    let mut match_lengths = AdaptiveDistribution::new(32);
+    let mut short_lengths = AdaptiveDistribution::new(5);
+    let mut distances = AdaptiveDistribution::new(32);
+    let mut output = Vec::with_capacity(output_len);
+
+    loop {
+        match decode_adaptive(&mut decoder, &mut types)? {
+            0 => {
+                let length = decode_bucket(&mut decoder, &mut literal_lengths)?
+                    .checked_add(1)
+                    .ok_or(LzError::InvalidArtifact)?;
+                ensure_remaining(output.len(), length, output_len)?;
+                for offset in 0..length {
+                    model.set_phase(Some(literal_phase(offset)));
+                    let scaled = decoder.scaled(model.total())?;
+                    let (byte, low, high, total) = model.symbol(scaled);
+                    decoder.advance(low, high, total)?;
+                    output.push(byte);
+                    model.update(byte);
+                }
+            }
+            1 => {
+                let length = decode_bucket(&mut decoder, &mut match_lengths)?
+                    .checked_add(MIN_MATCH)
+                    .filter(|&length| length <= MAX_MATCH)
+                    .ok_or(LzError::InvalidArtifact)?;
+                decode_short_copy(
+                    &mut decoder,
+                    &mut distances,
+                    &mut model,
+                    &mut output,
+                    output_len,
+                    length,
+                )?;
+            }
+            2 => {
+                let length = decode_adaptive(&mut decoder, &mut short_lengths)? + 3;
+                if length > 7 {
+                    return Err(LzError::InvalidArtifact);
+                }
+                decode_short_copy(
+                    &mut decoder,
+                    &mut distances,
+                    &mut model,
+                    &mut output,
+                    output_len,
+                    length,
+                )?;
+            }
+            3 => {
+                if output.len() != output_len {
+                    return Err(LzError::InvalidArtifact);
+                }
+                break;
+            }
+            _ => return Err(LzError::InvalidArtifact),
+        }
+    }
+    if crc32(&output) != expected_crc {
+        return Err(LzError::ChecksumMismatch);
+    }
+    Ok(output)
+}
+
+fn decode_short_copy(
+    decoder: &mut RangeDecoder<'_>,
+    distances: &mut AdaptiveDistribution,
+    model: &mut PhaseMatchModel,
+    output: &mut Vec<u8>,
+    output_len: usize,
+    length: usize,
+) -> Result<(), LzError> {
+    model.set_phase(None);
+    let distance = decode_bucket(decoder, distances)?
+        .checked_add(1)
+        .filter(|&distance| distance <= MAX_DISTANCE && distance <= output.len())
+        .ok_or(LzError::InvalidArtifact)?;
+    ensure_remaining(output.len(), length, output_len)?;
+    for _ in 0..length {
+        let byte = output[output.len() - distance];
+        output.push(byte);
+        model.update(byte);
+    }
+    Ok(())
 }
 
 fn decode_lz_artifact_with_model(
@@ -1538,6 +1909,13 @@ struct Entry {
 enum Block {
     Literal { start: usize, length: usize },
     Match { length: usize, distance: usize },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShortBlock {
+    Literal { start: usize, length: usize },
+    LongMatch { length: usize, distance: usize },
+    ShortMatch { length: usize, distance: usize },
 }
 
 fn parse(input: &[u8], candidates: usize) -> Vec<Block> {
@@ -2355,10 +2733,11 @@ mod tests {
 
     use super::{
         EXPERT_DIVISORS, EXPERTS, IntegerExpertMixture, LzError, decode_lz_artifact,
-        decode_lz_phase_artifact, decode_lz_phase_stream, decode_lz_stream, encode_lz_artifact,
-        encode_lz_phase_artifact, encode_lz_phase_stream, encode_lz_priced_artifact,
-        encode_lz_stream, encode_lz_two_candidate_artifact, encode_lz_two_candidate_stream,
-        literal_phase, profile_lz_priced_residual,
+        decode_lz_phase_artifact, decode_lz_phase_stream, decode_lz_short_artifact,
+        decode_lz_stream, encode_lz_artifact, encode_lz_phase_artifact, encode_lz_phase_stream,
+        encode_lz_priced_artifact, encode_lz_short_artifact, encode_lz_stream,
+        encode_lz_two_candidate_artifact, encode_lz_two_candidate_stream, literal_phase,
+        profile_lz_priced_residual, short_match,
     };
     use crate::HEADER_LEN;
 
@@ -2477,6 +2856,38 @@ mod tests {
     }
 
     #[test]
+    fn short_match_artifact_round_trips_and_is_format_isolated() {
+        for input in [
+            Vec::new(),
+            b"short".to_vec(),
+            b"abcXabcYabcZabcQabcRabcS".repeat(2_000),
+        ] {
+            let artifact = encode_lz_short_artifact(&input);
+            assert_eq!(
+                decode_lz_short_artifact(&artifact, input.len() as u64).unwrap(),
+                input
+            );
+            assert!(decode_lz_artifact(&artifact, u64::MAX).is_err());
+            assert!(decode_lz_phase_artifact(&artifact, u64::MAX).is_err());
+        }
+    }
+
+    #[test]
+    fn short_match_artifact_enforces_limits_and_integrity() {
+        let input = b"abcXabcYabcZabcQabcRabcS".repeat(2_000);
+        let artifact = encode_lz_short_artifact(&input);
+        assert_eq!(
+            decode_lz_short_artifact(&artifact, 1),
+            Err(LzError::OutputLimitExceeded)
+        );
+
+        let mut corrupt = artifact;
+        let index = corrupt.len() / 2;
+        corrupt[index] ^= 1;
+        assert!(decode_lz_short_artifact(&corrupt, input.len() as u64).is_err());
+    }
+
+    #[test]
     fn integer_expert_mixture_matches_reference_arithmetic() {
         let mut mixture = IntegerExpertMixture {
             weights: [1, 3, 17, 257, 4_099, 65_535],
@@ -2555,6 +2966,24 @@ mod tests {
         assert!(profile.global_remainder_model_bits.is_finite());
         assert!(profile.bucket_remainder_model_bits.is_finite());
         assert!(profile.exclusion_saved_bits.is_finite());
+    }
+
+    #[test]
+    fn priced_residual_profile_finds_short_literal_matches() {
+        let input = b"abcXabcYabcZabcQabcRabcS".repeat(200);
+        let profile = profile_lz_priced_residual(&input);
+        assert!(profile.short_match_events > 0);
+        assert!(profile.short_match_bytes >= profile.short_match_events * 3);
+        assert!(profile.short_match_literal_bits > profile.short_match_token_bits);
+    }
+
+    #[test]
+    fn short_match_does_not_cross_a_literal_boundary() {
+        let input = b"abcXabc";
+        let mut table = vec![super::ShortEntry::default(); super::TABLE_LEN];
+        super::insert_short(input, 0, &mut table);
+        assert_eq!(short_match(input, 4, 6, &table), None);
+        assert_eq!(short_match(input, 4, 7, &table), Some((3, 4)));
     }
 
     #[test]
