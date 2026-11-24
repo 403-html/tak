@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
@@ -8,6 +9,7 @@ use crate::{HEADER_LEN, crc32, read_u64};
 mod priced;
 
 const MAGIC: &[u8; 4] = b"TKLZ";
+const PHASE_MAGIC: &[u8; 4] = b"TKP7";
 const TABLE_BITS: u32 = 20;
 const TABLE_LEN: usize = 1 << TABLE_BITS;
 const HASH_MULTIPLIER: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -106,6 +108,28 @@ pub struct LzPricedResidualProfile {
     pub latest_source_hits: usize,
     /// Disagreement events where the older source predicts the literal.
     pub older_source_hits: usize,
+    /// Ideal literal bits with one global adaptive match-reliability calibrator.
+    pub global_calibrated_literal_bits: f64,
+    /// Ideal literal bits with adaptive reliability split by literal-run phase.
+    pub phase_calibrated_literal_bits: f64,
+    /// Exact-suffix prediction events in phase buckets 0, 1-3, 4-15, and 16+.
+    pub prediction_events_by_phase: [usize; 4],
+    /// Correct exact-suffix predictions in each literal-run phase bucket.
+    pub prediction_hits_by_phase: [usize; 4],
+    /// Ideal literal bits from one global mixture of fixed match bonuses.
+    pub global_expert_literal_bits: f64,
+    /// Ideal literal bits from separate fixed-bonus mixtures by run phase.
+    pub phase_expert_literal_bits: f64,
+    /// Ideal literal bits from one global count-derived integer bonus.
+    pub global_dynamic_literal_bits: f64,
+    /// Ideal literal bits from count-derived integer bonuses by run phase.
+    pub phase_dynamic_literal_bits: f64,
+    /// Ideal literal bits from the frozen per-phase fixed bonus mapping.
+    pub fixed_phase_literal_bits: f64,
+    /// Ideal literal bits from expert mixtures keyed by phase, length, and distance.
+    pub context_expert_literal_bits: f64,
+    /// Ideal literal bits from the deterministic integer phase mixture.
+    pub integer_phase_literal_bits: f64,
 }
 
 /// Errors produced by bounded RFC 0014 streaming decode.
@@ -171,6 +195,17 @@ pub fn encode_lz_priced_artifact(input: &[u8]) -> Vec<u8> {
     encode_blocks(input, priced::parse_priced(input))
 }
 
+/// Encodes an RFC 0017 literal-phase research artifact.
+#[must_use]
+pub fn encode_lz_phase_artifact(input: &[u8]) -> Vec<u8> {
+    encode_blocks_with_model(
+        input,
+        priced::parse_priced(input),
+        *PHASE_MAGIC,
+        PhaseMatchModel::new(),
+    )
+}
+
 /// Encodes an RFC 0016 price-based parser artifact with bounded memory.
 ///
 /// The artifact is byte-identical to [`encode_lz_priced_artifact`].
@@ -186,6 +221,27 @@ pub fn encode_lz_priced_stream(
     priced::encode_priced_stream(&mut input, &mut output)
 }
 
+/// Encodes an RFC 0017 literal-phase artifact with bounded memory.
+///
+/// The artifact is byte-identical to [`encode_lz_phase_artifact`].
+///
+/// # Errors
+///
+/// Returns an error for I/O failure, a nonempty output, or an input larger than
+/// the experimental format's `u32` encoder-position limit.
+pub fn encode_lz_phase_stream(
+    mut input: impl Read + Seek,
+    mut output: impl Write + Seek,
+) -> Result<LzEncodeStats, LzStreamError> {
+    priced::encode_priced_stream_with_model(
+        &mut input,
+        &mut output,
+        priced::RING_LEN,
+        *PHASE_MAGIC,
+        PhaseMatchModel::new(),
+    )
+}
+
 /// Profiles repeat-distance and post-match exclusion upper bounds for RFC 0016.
 #[must_use]
 pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
@@ -196,11 +252,20 @@ pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
         input_bytes: input.len(),
         ..LzPricedResidualProfile::default()
     };
-    let mut model = Match8Model::new();
     let mut distances = AdaptiveDistribution::new(32);
     let mut recent = Vec::with_capacity(REPEAT_SLOTS);
-    let mut suffix_table = vec![Entry::default(); TABLE_LEN];
+    let mut literal_profile = LiteralProfileState {
+        model: Match8Model::new(),
+        suffix_table: vec![Entry::default(); TABLE_LEN],
+        global_reliability: ReliabilityCounts::new(),
+        phase_reliability: [ReliabilityCounts::new(); 4],
+        global_experts: ExpertMixture::new(),
+        phase_experts: [ExpertMixture::new(); 4],
+        context_experts: [ExpertMixture::new(); 80],
+        integer_phase_experts: [IntegerExpertMixture::new(); 4],
+    };
     let mut excluded = None;
+    let mut previous_match_distance = None;
     let mut position = 0;
 
     for block in blocks {
@@ -209,22 +274,27 @@ pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
                 debug_assert_eq!(start, position);
                 result.literal_blocks += 1;
                 result.literal_bytes += length;
+                let length_class = literal_length_class(length);
+                let distance_class = match_distance_class(previous_match_distance);
                 if let (Some(skip), Some(&byte)) = (excluded, input.get(start)) {
                     if skip != byte {
-                        let (_, _, total) = model.range(byte);
-                        let (low, high, _) = model.range(skip);
+                        let (_, _, total) = literal_profile.model.range(byte);
+                        let (low, high, _) = literal_profile.model.range(skip);
                         result.excludable_literals += 1;
                         result.exclusion_saved_bits +=
                             f64::from(total).log2() - f64::from(total - (high - low)).log2();
                     }
                 }
-                for byte_position in start..start + length {
+                for (literal_offset, byte_position) in (start..start + length).enumerate() {
                     profile_priced_byte(
                         input,
                         byte_position,
-                        true,
-                        &mut model,
-                        &mut suffix_table,
+                        Some(LiteralContext {
+                            phase: literal_phase(literal_offset),
+                            length_class,
+                            distance_class,
+                        }),
+                        &mut literal_profile,
                         &mut result,
                     );
                 }
@@ -259,13 +329,13 @@ pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
                     profile_priced_byte(
                         input,
                         byte_position,
-                        false,
-                        &mut model,
-                        &mut suffix_table,
+                        None,
+                        &mut literal_profile,
                         &mut result,
                     );
                 }
                 position += length;
+                previous_match_distance = Some(distance);
                 excluded = position
                     .checked_sub(distance)
                     .and_then(|source| input.get(source))
@@ -277,28 +347,265 @@ pub fn profile_lz_priced_residual(input: &[u8]) -> LzPricedResidualProfile {
     result
 }
 
+struct LiteralProfileState {
+    model: Match8Model,
+    suffix_table: Vec<Entry>,
+    global_reliability: ReliabilityCounts,
+    phase_reliability: [ReliabilityCounts; 4],
+    global_experts: ExpertMixture,
+    phase_experts: [ExpertMixture; 4],
+    context_experts: [ExpertMixture; 80],
+    integer_phase_experts: [IntegerExpertMixture; 4],
+}
+
+#[derive(Clone, Copy)]
+struct ReliabilityCounts {
+    hits: u32,
+    misses: u32,
+}
+
+impl ReliabilityCounts {
+    const fn new() -> Self {
+        Self { hits: 1, misses: 1 }
+    }
+
+    fn prediction_probability(self) -> f64 {
+        f64::from(self.hits) / f64::from(self.hits + self.misses)
+    }
+
+    fn update(&mut self, hit: bool) {
+        if hit {
+            self.hits += 1;
+        } else {
+            self.misses += 1;
+        }
+    }
+
+    fn bonus(self, baseline_total: u32, prediction_width: u32) -> u32 {
+        let observations = u64::from(self.hits + self.misses);
+        let wanted = u64::from(self.hits) * u64::from(baseline_total);
+        let baseline = observations * u64::from(prediction_width);
+        if wanted <= baseline {
+            return 0;
+        }
+        let bonus = (wanted - baseline) / u64::from(self.misses);
+        u32::try_from(bonus.min(u64::from(baseline_total))).unwrap_or(baseline_total)
+    }
+}
+
+const EXPERTS: usize = 6;
+const EXPERT_DIVISORS: [u32; EXPERTS] = [1, 2, 4, 8, 16, u32::MAX];
+const PHASE_EXPERT_INDEX: [usize; 4] = [5, 3, 2, 2];
+
+#[derive(Clone, Copy)]
+struct LiteralContext {
+    phase: usize,
+    length_class: usize,
+    distance_class: usize,
+}
+
+impl LiteralContext {
+    const fn index(self) -> usize {
+        (self.phase * 4 + self.length_class) * 5 + self.distance_class
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ExpertMixture {
+    log_weights: [f64; EXPERTS],
+}
+
+impl ExpertMixture {
+    const fn new() -> Self {
+        Self {
+            log_weights: [0.0; EXPERTS],
+        }
+    }
+
+    fn code(&mut self, probabilities: [f64; EXPERTS]) -> f64 {
+        let maximum = self
+            .log_weights
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let weights = self.log_weights.map(|weight| (weight - maximum).exp());
+        let weight_total: f64 = weights.iter().sum();
+        let probability = weights
+            .iter()
+            .zip(probabilities)
+            .map(|(weight, expert)| weight * expert)
+            .sum::<f64>()
+            / weight_total;
+        for (weight, expert) in self.log_weights.iter_mut().zip(probabilities) {
+            *weight += expert.ln();
+        }
+        let updated_maximum = self
+            .log_weights
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        for weight in &mut self.log_weights {
+            *weight -= updated_maximum;
+        }
+        -probability.log2()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct IntegerExpertMixture {
+    weights: [u32; EXPERTS],
+}
+
+impl IntegerExpertMixture {
+    const SCALE: u128 = 1 << 32;
+    const WEIGHT_TOTAL: u128 = 65_535;
+
+    const fn new() -> Self {
+        Self {
+            weights: [1; EXPERTS],
+        }
+    }
+
+    fn bonus(self, total: u32) -> u32 {
+        let bonuses = EXPERT_DIVISORS
+            .map(|divisor| (divisor != u32::MAX).then(|| total / divisor).unwrap_or(0));
+        let scaled_weights = std::array::from_fn::<u128, EXPERTS, _>(|index| {
+            u128::from(self.weights[index]) * Self::SCALE / u128::from(total + bonuses[index])
+        });
+        let denominator: u128 = scaled_weights.iter().sum();
+        let numerator: u128 = scaled_weights
+            .iter()
+            .zip(bonuses)
+            .map(|(weight, bonus)| weight * u128::from(bonus))
+            .sum();
+        u32::try_from(numerator / denominator)
+            .unwrap_or(total)
+            .min(total)
+    }
+
+    fn update(&mut self, actual_width: u32, total: u32, hit: bool) {
+        let bonuses = EXPERT_DIVISORS
+            .map(|divisor| (divisor != u32::MAX).then(|| total / divisor).unwrap_or(0));
+        let scores = std::array::from_fn::<u128, EXPERTS, _>(|index| {
+            let width = actual_width + u32::from(hit) * bonuses[index];
+            u128::from(self.weights[index]) * u128::from(width) * Self::SCALE
+                / u128::from(total + bonuses[index])
+        });
+        let score_total: u128 = scores.iter().sum();
+        self.weights = scores.map(|score| {
+            let normalized = score * Self::WEIGHT_TOTAL / score_total;
+            u32::try_from(normalized.max(1)).unwrap_or(u32::MAX)
+        });
+    }
+
+    fn code(&mut self, actual_width: u32, total: u32, hit: bool) -> f64 {
+        let bits = bonus_bits(actual_width, total, self.bonus(total), hit);
+        self.update(actual_width, total, hit);
+        bits
+    }
+}
+
+const fn literal_phase(offset: usize) -> usize {
+    match offset {
+        0 => 0,
+        1..=3 => 1,
+        4..=15 => 2,
+        _ => 3,
+    }
+}
+
+const fn literal_length_class(length: usize) -> usize {
+    match length {
+        0 | 1 => 0,
+        2..=3 => 1,
+        4..=15 => 2,
+        _ => 3,
+    }
+}
+
+const fn match_distance_class(distance: Option<usize>) -> usize {
+    match distance {
+        None => 0,
+        Some(0..=256) => 1,
+        Some(257..=65_536) => 2,
+        Some(65_537..=1_048_576) => 3,
+        Some(_) => 4,
+    }
+}
+
 fn profile_priced_byte(
     input: &[u8],
     position: usize,
-    literal: bool,
-    model: &mut Match8Model,
-    suffix_table: &mut [Entry],
+    literal_context: Option<LiteralContext>,
+    state: &mut LiteralProfileState,
     result: &mut LzPricedResidualProfile,
 ) {
     let byte = input[position];
-    let (low, high, total) = model.range(byte);
+    let (low, high, total) = state.model.range(byte);
     let baseline_bits = f64::from(total).log2() - f64::from(high - low).log2();
     let mut candidate_bits = baseline_bits;
+    let mut global_calibrated_bits = baseline_bits;
+    let mut phase_calibrated_bits = baseline_bits;
+    let mut global_expert_bits = baseline_bits;
+    let mut phase_expert_bits = baseline_bits;
+    let mut global_dynamic_bits = baseline_bits;
+    let mut phase_dynamic_bits = baseline_bits;
+    let mut fixed_phase_bits = baseline_bits;
+    let mut context_expert_bits = baseline_bits;
+    let mut integer_phase_bits = baseline_bits;
+
+    if let (Some(context), Some(prediction)) = (literal_context, state.model.match_prediction()) {
+        let phase = context.phase;
+        let (prediction_low, prediction_high, _) = state.model.range(prediction);
+        let prediction_width = prediction_high - prediction_low;
+        let hit = prediction == byte;
+        global_calibrated_bits = reliability_bits(
+            state.global_reliability.prediction_probability(),
+            hit,
+            high - low,
+            total - prediction_width,
+        );
+        phase_calibrated_bits = reliability_bits(
+            state.phase_reliability[phase].prediction_probability(),
+            hit,
+            high - low,
+            total - prediction_width,
+        );
+        result.prediction_events_by_phase[phase] += 1;
+        result.prediction_hits_by_phase[phase] += usize::from(hit);
+        let (baseline_actual_low, baseline_actual_high, baseline_total) =
+            state.model.baseline_range(byte);
+        let baseline_actual_width = baseline_actual_high - baseline_actual_low;
+        let (baseline_prediction_low, baseline_prediction_high, _) =
+            state.model.baseline_range(prediction);
+        let baseline_prediction_width = baseline_prediction_high - baseline_prediction_low;
+        let global_bonus = state
+            .global_reliability
+            .bonus(baseline_total, baseline_prediction_width);
+        let phase_bonus =
+            state.phase_reliability[phase].bonus(baseline_total, baseline_prediction_width);
+        global_dynamic_bits = bonus_bits(baseline_actual_width, baseline_total, global_bonus, hit);
+        phase_dynamic_bits = bonus_bits(baseline_actual_width, baseline_total, phase_bonus, hit);
+        let probabilities = expert_probabilities(baseline_actual_width, baseline_total, hit);
+        global_expert_bits = state.global_experts.code(probabilities);
+        phase_expert_bits = state.phase_experts[phase].code(probabilities);
+        fixed_phase_bits = -probabilities[PHASE_EXPERT_INDEX[phase]].log2();
+        context_expert_bits = state.context_experts[context.index()].code(probabilities);
+        integer_phase_bits =
+            state.integer_phase_experts[phase].code(baseline_actual_width, baseline_total, hit);
+        state.global_reliability.update(hit);
+        state.phase_reliability[phase].update(hit);
+    }
 
     if let Some(suffix_start) = position.checked_sub(8) {
         if let Some(key) = key_at(input, suffix_start) {
-            let entry = suffix_table[table_index(key)];
+            let entry = state.suffix_table[table_index(key)];
             if entry.occupied && entry.key == key {
                 let latest = input[usize::try_from(entry.position).unwrap_or(0) + 8];
-                debug_assert_eq!(model.match_prediction(), Some(latest));
+                debug_assert_eq!(state.model.match_prediction(), Some(latest));
                 if entry.has_previous {
                     let older = input[usize::try_from(entry.previous_position).unwrap_or(0) + 8];
-                    if literal && older != latest {
+                    if literal_context.is_some() && older != latest {
                         result.two_source_disagreements += 1;
                         result.latest_source_hits += usize::from(latest == byte);
                         result.older_source_hits += usize::from(older == byte);
@@ -311,18 +618,202 @@ fn profile_priced_byte(
                     }
                 }
             }
-            model.update(byte);
-            insert(input, suffix_start, suffix_table);
+            state.model.update(byte);
+            insert(input, suffix_start, &mut state.suffix_table);
         } else {
-            model.update(byte);
+            state.model.update(byte);
         }
     } else {
-        model.update(byte);
+        state.model.update(byte);
     }
 
-    if literal {
+    if literal_context.is_some() {
         result.literal_model_bits += baseline_bits;
         result.two_source_literal_bits += candidate_bits;
+        result.global_calibrated_literal_bits += global_calibrated_bits;
+        result.phase_calibrated_literal_bits += phase_calibrated_bits;
+        result.global_expert_literal_bits += global_expert_bits;
+        result.phase_expert_literal_bits += phase_expert_bits;
+        result.global_dynamic_literal_bits += global_dynamic_bits;
+        result.phase_dynamic_literal_bits += phase_dynamic_bits;
+        result.fixed_phase_literal_bits += fixed_phase_bits;
+        result.context_expert_literal_bits += context_expert_bits;
+        result.integer_phase_literal_bits += integer_phase_bits;
+    }
+}
+
+fn expert_probabilities(actual_width: u32, total: u32, hit: bool) -> [f64; EXPERTS] {
+    EXPERT_DIVISORS.map(|divisor| {
+        let bonus = (divisor != u32::MAX).then(|| total / divisor).unwrap_or(0);
+        let width = actual_width + u32::from(hit) * bonus;
+        f64::from(width) / f64::from(total + bonus)
+    })
+}
+
+fn bonus_bits(actual_width: u32, total: u32, bonus: u32, hit: bool) -> f64 {
+    let width = actual_width + u32::from(hit) * bonus;
+    f64::from(total + bonus).log2() - f64::from(width).log2()
+}
+
+fn reliability_bits(
+    prediction_probability: f64,
+    hit: bool,
+    actual_width: u32,
+    nonprediction_total: u32,
+) -> f64 {
+    if hit {
+        -prediction_probability.log2()
+    } else {
+        -(1.0 - prediction_probability).log2() + f64::from(nonprediction_total).log2()
+            - f64::from(actual_width).log2()
+    }
+}
+
+trait BlockByteModel {
+    fn set_phase(&mut self, phase: Option<usize>);
+    fn range(&self, symbol: u8) -> (u32, u32, u32);
+    fn symbol(&self, value: u32) -> (u8, u32, u32, u32);
+    fn update(&mut self, symbol: u8);
+    fn total(&self) -> u32;
+}
+
+struct StandardMatchModel(Match8Model);
+
+impl StandardMatchModel {
+    fn new() -> Self {
+        Self(Match8Model::new())
+    }
+}
+
+impl BlockByteModel for StandardMatchModel {
+    fn set_phase(&mut self, _phase: Option<usize>) {}
+
+    fn range(&self, symbol: u8) -> (u32, u32, u32) {
+        self.0.range(symbol)
+    }
+
+    fn symbol(&self, value: u32) -> (u8, u32, u32, u32) {
+        self.0.symbol(value)
+    }
+
+    fn update(&mut self, symbol: u8) {
+        self.0.update(symbol);
+    }
+
+    fn total(&self) -> u32 {
+        self.0.total()
+    }
+}
+
+struct PhaseMatchModel {
+    model: Match8Model,
+    mixtures: [IntegerExpertMixture; 4],
+    phase: Option<usize>,
+    decoded_prediction_bonus: Cell<Option<(u8, u32)>>,
+    pending_mixture_update: Cell<Option<(usize, u32, u32, bool)>>,
+}
+
+impl PhaseMatchModel {
+    fn new() -> Self {
+        Self {
+            model: Match8Model::new(),
+            mixtures: [IntegerExpertMixture::new(); 4],
+            phase: None,
+            decoded_prediction_bonus: Cell::new(None),
+            pending_mixture_update: Cell::new(None),
+        }
+    }
+
+    fn prediction_bonus(&self) -> Option<(u8, u32)> {
+        let phase = self.phase?;
+        let prediction = self.model.match_prediction()?;
+        Some((
+            prediction,
+            self.mixtures[phase].bonus(self.model.baseline_total()),
+        ))
+    }
+}
+
+impl BlockByteModel for PhaseMatchModel {
+    fn set_phase(&mut self, phase: Option<usize>) {
+        self.phase = phase;
+        self.decoded_prediction_bonus.set(None);
+        self.pending_mixture_update.set(None);
+    }
+
+    fn range(&self, symbol: u8) -> (u32, u32, u32) {
+        let (mut low, mut high, total) = self.model.baseline_range(symbol);
+        let Some((prediction, bonus)) = self.prediction_bonus() else {
+            return (low, high, total);
+        };
+        if let Some(phase) = self.phase {
+            self.pending_mixture_update
+                .set(Some((phase, high - low, total, symbol == prediction)));
+        }
+        match symbol.cmp(&prediction) {
+            std::cmp::Ordering::Greater => {
+                low += bonus;
+                high += bonus;
+            }
+            std::cmp::Ordering::Equal => high += bonus,
+            std::cmp::Ordering::Less => {}
+        }
+        (low, high, total + bonus)
+    }
+
+    fn symbol(&self, value: u32) -> (u8, u32, u32, u32) {
+        let Some((prediction, bonus)) = self
+            .decoded_prediction_bonus
+            .take()
+            .or_else(|| self.prediction_bonus())
+        else {
+            return self.model.baseline_symbol(value);
+        };
+        let (prediction_low, prediction_high, total) = self.model.baseline_range(prediction);
+        let augmented_high = prediction_high + bonus;
+        if value >= prediction_low && value < augmented_high {
+            if let Some(phase) = self.phase {
+                self.pending_mixture_update.set(Some((
+                    phase,
+                    prediction_high - prediction_low,
+                    total,
+                    true,
+                )));
+            }
+            return (prediction, prediction_low, augmented_high, total + bonus);
+        }
+        let baseline_value = if value >= augmented_high {
+            value - bonus
+        } else {
+            value
+        };
+        let (symbol, mut low, mut high, _) = self.model.baseline_symbol(baseline_value);
+        if symbol > prediction {
+            low += bonus;
+            high += bonus;
+        }
+        if let Some(phase) = self.phase {
+            self.pending_mixture_update
+                .set(Some((phase, high - low, total, false)));
+        }
+        (symbol, low, high, total + bonus)
+    }
+
+    fn update(&mut self, symbol: u8) {
+        self.decoded_prediction_bonus.set(None);
+        if let Some((phase, width, total, hit)) = self.pending_mixture_update.take() {
+            self.mixtures[phase].update(width, total, hit);
+        }
+        ByteModel::update(&mut self.model, symbol);
+    }
+
+    fn total(&self) -> u32 {
+        let prediction_bonus = self.prediction_bonus();
+        self.decoded_prediction_bonus.set(prediction_bonus);
+        prediction_bonus.map_or_else(
+            || self.model.baseline_total(),
+            |(_, bonus)| self.model.baseline_total() + bonus,
+        )
     }
 }
 
@@ -331,8 +822,16 @@ fn encode_lz_artifact_with_candidates(input: &[u8], candidates: usize) -> Vec<u8
 }
 
 fn encode_blocks(input: &[u8], blocks: Vec<Block>) -> Vec<u8> {
+    encode_blocks_with_model(input, blocks, *MAGIC, StandardMatchModel::new())
+}
+
+fn encode_blocks_with_model(
+    input: &[u8],
+    blocks: Vec<Block>,
+    magic: [u8; 4],
+    mut model: impl BlockByteModel,
+) -> Vec<u8> {
     let mut encoder = RangeEncoder::new();
-    let mut model = Match8Model::new();
     let mut types = AdaptiveDistribution::new(3);
     let mut literal_lengths = AdaptiveDistribution::new(32);
     let mut match_lengths = AdaptiveDistribution::new(32);
@@ -345,7 +844,8 @@ fn encode_blocks(input: &[u8], blocks: Vec<Block>) -> Vec<u8> {
                 debug_assert_eq!(start, position);
                 encode_adaptive(&mut encoder, &mut types, 0);
                 encode_bucket(&mut encoder, &mut literal_lengths, length - 1);
-                for &byte in &input[start..start + length] {
+                for (offset, &byte) in input[start..start + length].iter().enumerate() {
+                    model.set_phase(Some(literal_phase(offset)));
                     let (low, high, total) = model.range(byte);
                     encoder.encode(low, high, total);
                     model.update(byte);
@@ -353,6 +853,7 @@ fn encode_blocks(input: &[u8], blocks: Vec<Block>) -> Vec<u8> {
                 position += length;
             }
             Block::Match { length, distance } => {
+                model.set_phase(None);
                 encode_adaptive(&mut encoder, &mut types, 1);
                 encode_bucket(&mut encoder, &mut match_lengths, length - MIN_MATCH);
                 encode_bucket(&mut encoder, &mut distances, distance - 1);
@@ -368,7 +869,7 @@ fn encode_blocks(input: &[u8], blocks: Vec<Block>) -> Vec<u8> {
     let payload = encoder.finish();
 
     let mut artifact = Vec::with_capacity(HEADER_LEN + payload.len());
-    artifact.extend_from_slice(MAGIC);
+    artifact.extend_from_slice(&magic);
     artifact.extend_from_slice(&[0; 4]);
     artifact.extend_from_slice(&(input.len() as u64).to_le_bytes());
     artifact.extend_from_slice(&(payload.len() as u64).to_le_bytes());
@@ -533,7 +1034,26 @@ fn encode_lz_stream_with_candidates(
 /// Returns an error for invalid fields, excessive output, invalid arithmetic,
 /// invalid match extents, or a checksum mismatch.
 pub fn decode_lz_artifact(artifact: &[u8], max_output: u64) -> Result<Vec<u8>, LzError> {
-    if artifact.len() < HEADER_LEN || &artifact[..4] != MAGIC || artifact[4..8] != [0; 4] {
+    decode_lz_artifact_with_model(artifact, max_output, *MAGIC, StandardMatchModel::new())
+}
+
+/// Decodes an RFC 0017 literal-phase research artifact.
+///
+/// # Errors
+///
+/// Returns an error for invalid fields, excessive output, invalid arithmetic,
+/// invalid match extents, or a checksum mismatch.
+pub fn decode_lz_phase_artifact(artifact: &[u8], max_output: u64) -> Result<Vec<u8>, LzError> {
+    decode_lz_artifact_with_model(artifact, max_output, *PHASE_MAGIC, PhaseMatchModel::new())
+}
+
+fn decode_lz_artifact_with_model(
+    artifact: &[u8],
+    max_output: u64,
+    magic: [u8; 4],
+    mut model: impl BlockByteModel,
+) -> Result<Vec<u8>, LzError> {
+    if artifact.len() < HEADER_LEN || artifact[..4] != magic || artifact[4..8] != [0; 4] {
         return Err(LzError::InvalidArtifact);
     }
     let output_len = read_u64(&artifact[8..16]);
@@ -552,7 +1072,6 @@ pub fn decode_lz_artifact(artifact: &[u8], max_output: u64) -> Result<Vec<u8>, L
     }
     let expected_crc = u32::from_le_bytes([artifact[24], artifact[25], artifact[26], artifact[27]]);
     let mut decoder = RangeDecoder::new(&artifact[HEADER_LEN..]);
-    let mut model = Match8Model::new();
     let mut types = AdaptiveDistribution::new(3);
     let mut literal_lengths = AdaptiveDistribution::new(32);
     let mut match_lengths = AdaptiveDistribution::new(32);
@@ -566,7 +1085,8 @@ pub fn decode_lz_artifact(artifact: &[u8], max_output: u64) -> Result<Vec<u8>, L
                 let encoded = decode_bucket(&mut decoder, &mut literal_lengths)?;
                 let length = encoded.checked_add(1).ok_or(LzError::InvalidArtifact)?;
                 ensure_remaining(output.len(), length, output_len)?;
-                for _ in 0..length {
+                for offset in 0..length {
+                    model.set_phase(Some(literal_phase(offset)));
                     let scaled = decoder.scaled(model.total())?;
                     let (byte, low, high, total) = model.symbol(scaled);
                     decoder.advance(low, high, total)?;
@@ -575,6 +1095,7 @@ pub fn decode_lz_artifact(artifact: &[u8], max_output: u64) -> Result<Vec<u8>, L
                 }
             }
             1 => {
+                model.set_phase(None);
                 let encoded_length = decode_bucket(&mut decoder, &mut match_lengths)?;
                 let length = encoded_length
                     .checked_add(MIN_MATCH)
@@ -623,6 +1144,42 @@ pub fn decode_lz_stream(
     output: impl Write,
     max_output: u64,
 ) -> Result<LzStreamStats, LzStreamError> {
+    decode_lz_stream_with_model(
+        &mut artifact,
+        output,
+        max_output,
+        *MAGIC,
+        StandardMatchModel::new(),
+    )
+}
+
+/// Decodes an RFC 0017 literal-phase artifact with bounded memory.
+///
+/// # Errors
+///
+/// Returns an error for I/O failure, invalid fields, excessive output, invalid
+/// arithmetic, invalid match extents, or a checksum mismatch.
+pub fn decode_lz_phase_stream(
+    mut artifact: impl Read + Seek,
+    output: impl Write,
+    max_output: u64,
+) -> Result<LzStreamStats, LzStreamError> {
+    decode_lz_stream_with_model(
+        &mut artifact,
+        output,
+        max_output,
+        *PHASE_MAGIC,
+        PhaseMatchModel::new(),
+    )
+}
+
+fn decode_lz_stream_with_model(
+    artifact: &mut (impl Read + Seek),
+    output: impl Write,
+    max_output: u64,
+    magic: [u8; 4],
+    mut model: impl BlockByteModel,
+) -> Result<LzStreamStats, LzStreamError> {
     let artifact_len = artifact.seek(SeekFrom::End(0))?;
     artifact.seek(SeekFrom::Start(0))?;
     let mut header = [0_u8; HEADER_LEN];
@@ -633,7 +1190,7 @@ pub fn decode_lz_stream(
             LzStreamError::Io(error)
         }
     })?;
-    if &header[..4] != MAGIC || header[4..8] != [0; 4] {
+    if header[..4] != magic || header[4..8] != [0; 4] {
         return Err(LzError::InvalidArtifact.into());
     }
     let output_len = read_u64(&header[8..16]);
@@ -653,7 +1210,6 @@ pub fn decode_lz_stream(
         usize::try_from(output_len.min(MAX_DISTANCE_U64)).map_err(|_| LzError::InvalidArtifact)?;
     let mut restored = StreamOutput::new(output, window_capacity);
     let mut decoder = StreamRangeDecoder::new(artifact.take(payload_len))?;
-    let mut model = Match8Model::new();
     let mut types = AdaptiveDistribution::new(3);
     let mut literal_lengths = AdaptiveDistribution::new(32);
     let mut match_lengths = AdaptiveDistribution::new(32);
@@ -666,7 +1222,8 @@ pub fn decode_lz_stream(
                 let encoded = decode_bucket_stream(&mut decoder, &mut literal_lengths)?;
                 let length = encoded.checked_add(1).ok_or(LzError::InvalidArtifact)?;
                 ensure_remaining_u64(restored.bytes, length, output_len)?;
-                for _ in 0..length {
+                for offset in 0..length {
+                    model.set_phase(Some(literal_phase(offset)));
                     let scaled = decoder.scaled(model.total())?;
                     let (byte, low, high, total) = model.symbol(scaled);
                     decoder.advance(low, high, total)?;
@@ -675,6 +1232,7 @@ pub fn decode_lz_stream(
                 }
             }
             1 => {
+                model.set_phase(None);
                 let encoded_length = decode_bucket_stream(&mut decoder, &mut match_lengths)?;
                 let length = encoded_length
                     .checked_add(MIN_MATCH)
@@ -1755,9 +2313,11 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        LzError, decode_lz_artifact, decode_lz_stream, encode_lz_artifact,
-        encode_lz_priced_artifact, encode_lz_stream, encode_lz_two_candidate_artifact,
-        encode_lz_two_candidate_stream, profile_lz_priced_residual,
+        EXPERT_DIVISORS, EXPERTS, IntegerExpertMixture, LzError, decode_lz_artifact,
+        decode_lz_phase_artifact, decode_lz_phase_stream, decode_lz_stream, encode_lz_artifact,
+        encode_lz_phase_artifact, encode_lz_phase_stream, encode_lz_priced_artifact,
+        encode_lz_stream, encode_lz_two_candidate_artifact, encode_lz_two_candidate_stream,
+        literal_phase, profile_lz_priced_residual,
     };
     use crate::HEADER_LEN;
 
@@ -1851,6 +2411,97 @@ mod tests {
             let artifact = encode_lz_priced_artifact(input);
             assert_eq!(decode_lz_artifact(&artifact, 8).unwrap(), input);
         }
+    }
+
+    #[test]
+    fn phase_artifact_round_trips_and_rejects_other_magic() {
+        for input in [
+            Vec::new(),
+            b"short".to_vec(),
+            b"abcdefghXabcdefghYabcdefghZ".repeat(2_000),
+        ] {
+            let artifact = encode_lz_phase_artifact(&input);
+            assert_eq!(
+                decode_lz_phase_artifact(&artifact, input.len() as u64).unwrap(),
+                input
+            );
+            assert!(decode_lz_artifact(&artifact, u64::MAX).is_err());
+            if !artifact.is_empty() {
+                let mut corrupt = artifact.clone();
+                let index = corrupt.len() / 2;
+                corrupt[index] ^= 0x20;
+                assert!(decode_lz_phase_artifact(&corrupt, input.len() as u64).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn integer_expert_mixture_matches_reference_arithmetic() {
+        let mut mixture = IntegerExpertMixture {
+            weights: [1, 3, 17, 257, 4_099, 65_535],
+        };
+        let total = 16_384_u32;
+        let bonuses = EXPERT_DIVISORS
+            .map(|divisor| (divisor != u32::MAX).then(|| total / divisor).unwrap_or(0));
+        let scaled = std::array::from_fn::<u128, EXPERTS, _>(|index| {
+            u128::from(mixture.weights[index]) * (1_u128 << 32) / u128::from(total + bonuses[index])
+        });
+        let expected_bonus = scaled
+            .iter()
+            .zip(bonuses)
+            .map(|(weight, bonus)| weight * u128::from(bonus))
+            .sum::<u128>()
+            / scaled.iter().sum::<u128>();
+        assert_eq!(u128::from(mixture.bonus(total)), expected_bonus);
+
+        let actual_width = 7_919_u32;
+        let hit = true;
+        let scores = std::array::from_fn::<u128, EXPERTS, _>(|index| {
+            let width = actual_width + u32::from(hit) * bonuses[index];
+            u128::from(mixture.weights[index]) * u128::from(width) * (1_u128 << 32)
+                / u128::from(total + bonuses[index])
+        });
+        let score_total = scores.iter().sum::<u128>();
+        let expected_weights =
+            scores.map(|score| u32::try_from((score * 65_535 / score_total).max(1)).unwrap());
+        mixture.update(actual_width, total, hit);
+        assert_eq!(mixture.weights, expected_weights);
+        assert_eq!(
+            [
+                literal_phase(0),
+                literal_phase(1),
+                literal_phase(4),
+                literal_phase(16)
+            ],
+            [0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn bounded_phase_codec_matches_buffered_artifact() {
+        let mut input = b"literal phase bounded identity ".repeat(4_000);
+        input.extend((0_u8..=255).cycle().take(70_000));
+        input.extend_from_slice(&input.clone()[20_000..80_000]);
+        let expected = encode_lz_phase_artifact(&input);
+        let mut artifact = Cursor::new(Vec::new());
+        let stats = encode_lz_phase_stream(Cursor::new(&input), &mut artifact).unwrap();
+        assert_eq!(artifact.get_ref(), &expected);
+        assert_eq!(stats.artifact_bytes, expected.len() as u64);
+
+        artifact.set_position(0);
+        let mut restored = Vec::new();
+        decode_lz_phase_stream(artifact, &mut restored, input.len() as u64).unwrap();
+        assert_eq!(restored, input);
+
+        let mut rejected = Vec::new();
+        assert!(decode_lz_phase_stream(Cursor::new(&expected), &mut rejected, 1).is_err());
+        let mut corrupt = expected;
+        let index = corrupt.len() / 2;
+        corrupt[index] ^= 1;
+        assert!(
+            decode_lz_phase_stream(Cursor::new(corrupt), &mut Vec::new(), input.len() as u64)
+                .is_err()
+        );
     }
 
     #[test]

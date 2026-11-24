@@ -3,9 +3,10 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use tak_context::{ByteModel, Match8Model};
 
 use super::{
-    AdaptiveDistribution, Block, Entry, HEADER_LEN, LzEncodeStats, LzError, LzStreamError, MAGIC,
-    MAX_DISTANCE, MAX_MATCH, MIN_MATCH, StreamRangeEncoder, TABLE_LEN, encode_adaptive_streaming,
-    encode_bucket_streaming, key_at, stream_crc, table_index,
+    AdaptiveDistribution, Block, BlockByteModel, Entry, HEADER_LEN, LzEncodeStats, LzError,
+    LzStreamError, MAGIC, MAX_DISTANCE, MAX_MATCH, MIN_MATCH, StandardMatchModel,
+    StreamRangeEncoder, TABLE_LEN, encode_adaptive_streaming, encode_bucket_streaming, key_at,
+    stream_crc, table_index,
 };
 
 const SEGMENT_LEN: usize = 65_536;
@@ -235,7 +236,7 @@ pub(super) fn parse_priced_with<I: PricedInput>(
     Ok(())
 }
 
-const RING_LEN: usize = 128 * 1024 * 1024;
+pub(super) const RING_LEN: usize = 128 * 1024 * 1024;
 const READ_CHUNKS_PER_RING: usize = 128;
 const OLD_PAGE_LEN: usize = 64 * 1024;
 
@@ -342,13 +343,15 @@ pub(super) fn encode_priced_stream(
     input: &mut (impl Read + Seek),
     output: &mut (impl Write + Seek),
 ) -> Result<LzEncodeStats, LzStreamError> {
-    encode_priced_stream_with_ring(input, output, RING_LEN)
+    encode_priced_stream_with_model(input, output, RING_LEN, *MAGIC, StandardMatchModel::new())
 }
 
-fn encode_priced_stream_with_ring(
+pub(super) fn encode_priced_stream_with_model(
     input: &mut (impl Read + Seek),
     output: &mut (impl Write + Seek),
     ring_len: usize,
+    magic: [u8; 4],
+    mut model: impl BlockByteModel,
 ) -> Result<LzEncodeStats, LzStreamError> {
     let input_len = input.seek(SeekFrom::End(0))?;
     if input_len > u64::from(u32::MAX) {
@@ -368,7 +371,6 @@ fn encode_priced_stream_with_ring(
     let len = usize::try_from(input_len).map_err(|_| LzStreamError::InputTooLarge)?;
     let mut source = WindowInput::new(input, len, ring_len);
     let mut encoder = StreamRangeEncoder::new(&mut *output);
-    let mut model = Match8Model::new();
     let mut types = AdaptiveDistribution::new(3);
     let mut literal_lengths = AdaptiveDistribution::new(SYMBOLS);
     let mut match_lengths = AdaptiveDistribution::new(SYMBOLS);
@@ -381,6 +383,7 @@ fn encode_priced_stream_with_ring(
                 encode_adaptive_streaming(&mut encoder, &mut types, 0)?;
                 encode_bucket_streaming(&mut encoder, &mut literal_lengths, length - 1)?;
                 for offset in 0..length {
+                    model.set_phase(Some(super::literal_phase(offset)));
                     let byte = source.byte(start + offset)?;
                     let (low, high, total) = model.range(byte);
                     encoder.encode(low, high, total)?;
@@ -389,6 +392,7 @@ fn encode_priced_stream_with_ring(
                 position += length;
             }
             Block::Match { length, distance } => {
+                model.set_phase(None);
                 encode_adaptive_streaming(&mut encoder, &mut types, 1)?;
                 encode_bucket_streaming(&mut encoder, &mut match_lengths, length - MIN_MATCH)?;
                 encode_bucket_streaming(&mut encoder, &mut distances, distance - 1)?;
@@ -409,7 +413,7 @@ fn encode_priced_stream_with_ring(
         .checked_add(payload_len)
         .ok_or(LzError::InvalidArtifact)?;
     output.seek(SeekFrom::Start(0))?;
-    output.write_all(MAGIC)?;
+    output.write_all(&magic)?;
     output.write_all(&[0; 4])?;
     output.write_all(&input_len.to_le_bytes())?;
     output.write_all(&payload_len.to_le_bytes())?;
@@ -420,6 +424,15 @@ fn encode_priced_stream_with_ring(
         payload_bytes: payload_len,
         artifact_bytes: artifact_len,
     })
+}
+
+#[cfg(test)]
+fn encode_priced_stream_with_ring(
+    input: &mut (impl Read + Seek),
+    output: &mut (impl Write + Seek),
+    ring_len: usize,
+) -> Result<LzEncodeStats, LzStreamError> {
+    encode_priced_stream_with_model(input, output, ring_len, *MAGIC, StandardMatchModel::new())
 }
 
 fn insert_key(table: &mut [Entry], key: Option<u64>, position: usize) {
