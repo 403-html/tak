@@ -1,6 +1,6 @@
 # RFC 0018: Short LZ match opportunity
 
-- Status: Opportunity gate accepted; complete artifact pending
+- Status: Rejected after complete-artifact development gate
 - Date: 2026-11-24
 - Scope: Classical 3-to-7-byte LZ matches
 - TAK-C method identifier: None
@@ -86,6 +86,23 @@ every file MUST restore exactly, and median decode time MUST remain within
 
 Only a passing Calgary artifact permits a bounded enwik9 run. Do not tune the
 method on Calgary or enwik9.
+
+### 5.1 Result
+
+The complete artifact fails the Silesia gate. It improves two of five files,
+not the required four. It grows from 2,696,546 to 2,719,594 bytes in aggregate.
+This is 23,048 bytes larger, or -0.01951 saved bits per input byte. The required
+aggregate reduction is +0.08 bits per input byte.
+
+Every screened artifact restores the exact input. The single-run decode ratios
+range from 0.74 to 1.01, but these are screening values, not publishable timing
+measurements. The size failure rejects the method before a memory measurement.
+Calgary and enwik9 were not run.
+
+The opportunity estimate omitted type-symbol cost, short-length cost,
+literal-block fragmentation, and changed literal phases. Complete accounting
+reverses the estimated gain on three files. See
+`research/experiments/2026-11-24-rejected-short-lz-match-artifact.md`.
 
 ## 6. Decoder requirements
 
