@@ -1,6 +1,6 @@
 use std::{env, fs, path::PathBuf, process::ExitCode, time::Instant};
 
-use tak_tensor::profile_match_distance_literal;
+use tak_tensor::{profile_match_distance_literal, profile_short_suffix_backoff};
 
 fn main() -> ExitCode {
     match run() {
@@ -14,7 +14,11 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
-    let (path, tail_bytes) = match args.as_slice() {
+    let (short_suffix, args) = match args.as_slice() {
+        [flag, rest @ ..] if flag == "--short-suffix" => (true, rest),
+        rest => (false, rest),
+    };
+    let (path, tail_bytes) = match args {
         [path] => (PathBuf::from(path), None),
         [path, option, value] if option == "--tail-bytes" => (
             PathBuf::from(path),
@@ -24,7 +28,7 @@ fn run() -> Result<(), String> {
                     .map_err(|_| "tail-bytes must be a nonnegative integer")?,
             ),
         ),
-        _ => return Err("expected INPUT [--tail-bytes N]".to_owned()),
+        _ => return Err("expected [--short-suffix] INPUT [--tail-bytes N]".to_owned()),
     };
     let input = fs::read(path).map_err(|error| error.to_string())?;
     let input = if let Some(bytes) = tail_bytes {
@@ -38,7 +42,11 @@ fn run() -> Result<(), String> {
     };
 
     let start = Instant::now();
-    let profile = profile_match_distance_literal(input);
+    let profile = if short_suffix {
+        profile_short_suffix_backoff(input)
+    } else {
+        profile_match_distance_literal(input)
+    };
     let seconds = start.elapsed().as_secs_f64();
     let saved_bits = profile.control_bits - profile.candidate_bits;
     let input_bytes = u32::try_from(input.len()).map_err(|_| "input exceeds u32")?;

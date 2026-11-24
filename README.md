@@ -316,6 +316,11 @@ match history. It lowered ideal literal cost on all five Silesia tails
 and on 10 of 18 Calgary files. The Calgary gate required 12 improvements.
 The experiment ended before artifact implementation.
 
+RFC 0030 added a three-byte suffix predictor for literals without an
+eight-byte prediction. Four of five Silesia tails improved. The aggregate
+saved 0.012735 ideal bits per input byte, below the 0.016 development gate.
+The experiment ended before Calgary.
+
 Reproduce the RFC 0002 tensor artifact with:
 
 ```console

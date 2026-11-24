@@ -183,16 +183,16 @@ pub struct LiteralPhaseOrder2Profile {
     pub candidate_bits_by_phase: [f64; 4],
 }
 
-/// Ideal-bit diagnostic for RFC 0023's match-distance literal continuation.
+/// Ideal-bit diagnostic for an alternate literal continuation predictor.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MatchDistanceLiteralProfile {
     /// Number of bytes in the complete input.
     pub input_bytes: usize,
     /// Number of bytes coded as literals by the RFC 0019 parse.
     pub literal_bytes: usize,
-    /// Literal events with an available preceding-distance source byte.
+    /// Literal events eligible for the alternate predictor.
     pub eligible_literals: usize,
-    /// Eligible events where the source byte equals the literal.
+    /// Eligible events where the predicted byte equals the literal.
     pub source_hits: usize,
     /// Ideal bits from the complete RFC 0019 literal model.
     pub control_bits: f64,
@@ -601,6 +601,97 @@ pub fn profile_literal_only_counts(input: &[u8]) -> LiteralPhaseOrder2Profile {
     result.literal_bytes = result.literal_bytes_by_phase.iter().sum();
     result.control_bits = result.control_bits_by_phase.iter().sum();
     result.candidate_bits = result.candidate_bits_by_phase.iter().sum();
+    result
+}
+
+const SHORT_SUFFIX_TABLE_BITS: u32 = 18;
+const SHORT_SUFFIX_MASK: u32 = 0x00ff_ffff;
+
+struct ShortSuffixPredictor {
+    table: Vec<u64>,
+    history: u32,
+    seen: u8,
+}
+
+impl ShortSuffixPredictor {
+    fn new() -> Self {
+        Self {
+            table: vec![0; 1 << SHORT_SUFFIX_TABLE_BITS],
+            history: 0,
+            seen: 0,
+        }
+    }
+
+    fn index(&self) -> usize {
+        (self.history.wrapping_mul(0x9e37_79b1) >> (32 - SHORT_SUFFIX_TABLE_BITS)) as usize
+    }
+
+    fn prediction(&self) -> Option<u8> {
+        if self.seen < 3 {
+            return None;
+        }
+        let entry = self.table[self.index()];
+        (entry >> 8 == u64::from(self.history) + 1).then(|| entry.to_le_bytes()[0])
+    }
+
+    fn observe(&mut self, byte: u8) {
+        if self.seen == 3 {
+            let index = self.index();
+            self.table[index] = ((u64::from(self.history) + 1) << 8) | u64::from(byte);
+        }
+        self.history = ((self.history << 8) | u32::from(byte)) & SHORT_SUFFIX_MASK;
+        self.seen = (self.seen + 1).min(3);
+    }
+}
+
+/// Profiles RFC 0030's short-suffix backoff on the RFC 0019 parse.
+#[must_use]
+pub fn profile_short_suffix_backoff(input: &[u8]) -> MatchDistanceLiteralProfile {
+    let mut control = PhaseMatchModel::new();
+    let mut predictor = ShortSuffixPredictor::new();
+    let mut mixture = IntegerExpertMixture::new();
+    let mut result = MatchDistanceLiteralProfile {
+        input_bytes: input.len(),
+        ..MatchDistanceLiteralProfile::default()
+    };
+    let mut position = 0;
+    for block in priced::parse_priced(input) {
+        match block {
+            Block::Literal { start, length } => {
+                for (offset, &byte) in input[start..start + length].iter().enumerate() {
+                    control.set_phase(Some(literal_phase(offset)));
+                    let (low, high, total) = control.range(byte);
+                    let width = high - low;
+                    let control_bits = bonus_bits(width, total, 0, false);
+                    let candidate_bits = if let (None, Some(prediction)) =
+                        (control.model.match_prediction(), predictor.prediction())
+                    {
+                        let hit = byte == prediction;
+                        result.eligible_literals += 1;
+                        result.source_hits += usize::from(hit);
+                        mixture.code(width, total, hit)
+                    } else {
+                        control_bits
+                    };
+                    result.literal_bytes += 1;
+                    result.control_bits += control_bits;
+                    result.candidate_bits += candidate_bits;
+                    control.update(byte);
+                    predictor.observe(byte);
+                }
+                position += length;
+            }
+            Block::Match { length, .. } => {
+                control.set_phase(None);
+                for &byte in &input[position..position + length] {
+                    control.update(byte);
+                    predictor.observe(byte);
+                }
+                position += length;
+            }
+        }
+    }
+    debug_assert_eq!(position, input.len());
     result
 }
 
@@ -3415,6 +3506,20 @@ mod tests {
         short_match,
     };
     use crate::HEADER_LEN;
+
+    #[test]
+    fn short_suffix_predictor_uses_latest_observed_continuation() {
+        let mut predictor = super::ShortSuffixPredictor::new();
+        assert_eq!(predictor.prediction(), None);
+        for &byte in b"abcXabc" {
+            predictor.observe(byte);
+        }
+        assert_eq!(predictor.prediction(), Some(b'X'));
+        for &byte in b"Yabc" {
+            predictor.observe(byte);
+        }
+        assert_eq!(predictor.prediction(), Some(b'Y'));
+    }
 
     #[test]
     fn bulk_renormalization_matches_single_bit_steps() {
