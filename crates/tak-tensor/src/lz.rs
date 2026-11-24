@@ -164,7 +164,7 @@ pub struct LzPricedResidualProfile {
     pub integer_phase_literal_bits: f64,
 }
 
-/// Ideal-bit diagnostic for RFC 0022's literal-phase order-2 dependency.
+/// Ideal-bit diagnostic for a candidate with the frozen RFC 0019 literal parse.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LiteralPhaseOrder2Profile {
     /// Number of bytes in the complete input.
@@ -175,7 +175,7 @@ pub struct LiteralPhaseOrder2Profile {
     pub literal_bytes_by_phase: [usize; 4],
     /// Ideal bits from the complete RFC 0019 literal model.
     pub control_bits: f64,
-    /// Ideal bits from the RFC 0022 two-expert mixture.
+    /// Ideal bits from the candidate literal model.
     pub candidate_bits: f64,
     /// Control ideal bits in each literal phase.
     pub control_bits_by_phase: [f64; 4],
@@ -555,6 +555,52 @@ pub fn profile_literal_phase_order2(input: &[u8]) -> LiteralPhaseOrder2Profile {
         }
     }
     debug_assert_eq!(position, input.len());
+    result
+}
+
+/// Profiles RFC 0029's literal-only probability counts.
+#[must_use]
+pub fn profile_literal_only_counts(input: &[u8]) -> LiteralPhaseOrder2Profile {
+    let mut control = PhaseMatchModel::new();
+    let mut candidate = PhaseMatchModel::new();
+    let mut result = LiteralPhaseOrder2Profile {
+        input_bytes: input.len(),
+        ..LiteralPhaseOrder2Profile::default()
+    };
+    let mut position = 0;
+    for block in priced::parse_priced(input) {
+        match block {
+            Block::Literal { start, length } => {
+                debug_assert_eq!(start, position);
+                for (offset, &byte) in input[start..start + length].iter().enumerate() {
+                    let phase = literal_phase(offset);
+                    control.set_phase(Some(phase));
+                    candidate.set_phase(Some(phase));
+                    let bits =
+                        |(low, high, total)| f64::from(total).log2() - f64::from(high - low).log2();
+                    result.control_bits_by_phase[phase] += bits(control.range(byte));
+                    result.candidate_bits_by_phase[phase] += bits(candidate.range(byte));
+                    result.literal_bytes_by_phase[phase] += 1;
+                    control.update(byte);
+                    candidate.update(byte);
+                }
+                position += length;
+            }
+            Block::Match { length, .. } => {
+                control.set_phase(None);
+                candidate.set_phase(None);
+                for &byte in &input[position..position + length] {
+                    control.update(byte);
+                    candidate.model.observe(byte);
+                }
+                position += length;
+            }
+        }
+    }
+    debug_assert_eq!(position, input.len());
+    result.literal_bytes = result.literal_bytes_by_phase.iter().sum();
+    result.control_bits = result.control_bits_by_phase.iter().sum();
+    result.candidate_bits = result.candidate_bits_by_phase.iter().sum();
     result
 }
 

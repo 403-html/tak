@@ -321,6 +321,25 @@ impl Match8Model {
     pub fn baseline_total(&self) -> u32 {
         self.baseline.total()
     }
+
+    /// Advances history and records the suffix continuation without learning
+    /// new baseline frequencies.
+    pub fn observe(&mut self, symbol: u8) {
+        self.baseline.observe(symbol);
+        self.record_continuation(symbol);
+    }
+
+    fn record_continuation(&mut self, symbol: u8) {
+        if self.seen >= 8 {
+            self.table[Self::index(self.history)] = MatchEntry {
+                key: self.history,
+                continuation: symbol,
+                occupied: true,
+            };
+        }
+        self.history = (self.history << 8) | u64::from(symbol);
+        self.seen = self.seen.saturating_add(1).min(8);
+    }
 }
 
 impl Default for Match8Model {
@@ -377,15 +396,7 @@ impl ByteModel for Match8Model {
 
     fn update(&mut self, symbol: u8) {
         self.baseline.update(symbol);
-        if self.seen >= 8 {
-            self.table[Self::index(self.history)] = MatchEntry {
-                key: self.history,
-                continuation: symbol,
-                occupied: true,
-            };
-        }
-        self.history = (self.history << 8) | u64::from(symbol);
-        self.seen = self.seen.saturating_add(1).min(8);
+        self.record_continuation(symbol);
     }
 
     fn total(&self) -> u32 {
@@ -954,6 +965,21 @@ mod tests {
         Order2Model, Order2NormalizedModel, Order2SmoothedModel, Order3BackoffModel, Order3Model,
         SparseDistribution,
     };
+
+    #[test]
+    fn match8_observe_keeps_history_without_learning_baseline_counts() {
+        let mut observed = Match8Model::new();
+        let mut trained = Match8Model::new();
+        for &byte in b"abcdefghXabcdefgh" {
+            observed.observe(byte);
+            trained.update(byte);
+        }
+        assert_eq!(observed.match_prediction(), Some(b'X'));
+        assert_eq!(observed.match_prediction(), trained.match_prediction());
+        assert_ne!(observed.baseline_range(b'X'), trained.baseline_range(b'X'));
+        let (low, high, total) = observed.baseline_range(b'X');
+        assert_eq!((high - low, total), (4, 1_024));
+    }
 
     fn exercise(mut model: impl ByteModel) {
         for symbol in (0_u8..=255).cycle().take(40_000) {
