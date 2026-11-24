@@ -40,10 +40,10 @@ fn run() -> Result<(), String> {
 
     let profile = profile_lz_priced_residual(input);
     println!(
-        "input_bytes\tliteral_blocks\tmatch_blocks\tliteral_bytes\tmatch_bytes\tglobal_type_bits\tstructural_type_bits\tstructural_type_decisions\timplicit_match_types\tdistance_bits\tdistance_remainder_bits\tglobal_remainder_model_bits\tbucket_remainder_model_bits\tshort_match_events\tshort_match_bytes\tshort_match_literal_bits\tshort_match_token_bits\trepeat0_matches\trepeat0_distance_bits\trepeat4_matches\trepeat4_distance_bits\texcludable_literals\texclusion_saved_bits\tliteral_model_bits\ttwo_source_literal_bits\ttwo_source_disagreements\tlatest_source_hits\tolder_source_hits\tglobal_calibrated_literal_bits\tphase_calibrated_literal_bits\tglobal_expert_literal_bits\tphase_expert_literal_bits\tglobal_dynamic_literal_bits\tphase_dynamic_literal_bits\tfixed_phase_literal_bits\tcontext_expert_literal_bits\tinteger_phase_literal_bits\tphase0_events\tphase0_hits\tphase1_events\tphase1_hits\tphase2_events\tphase2_hits\tphase3_events\tphase3_hits"
+        "input_bytes\tliteral_blocks\tmatch_blocks\tliteral_bytes\tmatch_bytes\tglobal_type_bits\tstructural_type_bits\tstructural_type_decisions\timplicit_match_types\tmatch_length_bits\tstate_match_length_bits\tdistance_bits\tstate_distance_bits\tdistance_remainder_bits\tglobal_remainder_model_bits\tbucket_remainder_model_bits\tshort_match_events\tshort_match_bytes\tshort_match_literal_bits\tshort_match_token_bits\trepeat0_matches\trepeat0_distance_bits\trepeat4_matches\trepeat4_distance_bits\texcludable_literals\texclusion_saved_bits\tliteral_model_bits\ttwo_source_literal_bits\ttwo_source_disagreements\tlatest_source_hits\tolder_source_hits\tglobal_calibrated_literal_bits\tphase_calibrated_literal_bits\tglobal_expert_literal_bits\tphase_expert_literal_bits\tglobal_dynamic_literal_bits\tphase_dynamic_literal_bits\tfixed_phase_literal_bits\tcontext_expert_literal_bits\tinteger_phase_literal_bits\tphase0_events\tphase0_hits\tphase1_events\tphase1_hits\tphase2_events\tphase2_hits\tphase3_events\tphase3_hits"
     );
     println!(
-        "{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{}\t{}\t{:.3}\t{}\t{:.3}\t{:.3}\t{}\t{}\t{:.3}\t{:.3}\t{}\t{:.3}\t{}\t{:.3}\t{}\t{:.3}\t{:.3}\t{:.3}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{}\t{:.3}\t{:.3}\t{}\t{}\t{:.3}\t{:.3}\t{}\t{:.3}\t{}\t{:.3}\t{}\t{:.3}\t{:.3}\t{:.3}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         profile.input_bytes,
         profile.literal_blocks,
         profile.match_blocks,
@@ -53,7 +53,10 @@ fn run() -> Result<(), String> {
         profile.structural_type_bits,
         profile.structural_type_decisions,
         profile.implicit_match_types,
+        profile.match_length_bits,
+        profile.state_match_length_bits,
         profile.distance_bits,
+        profile.state_distance_bits,
         profile.distance_remainder_bits,
         profile.global_remainder_model_bits,
         profile.bucket_remainder_model_bits,
