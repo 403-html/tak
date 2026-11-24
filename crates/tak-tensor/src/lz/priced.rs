@@ -343,7 +343,14 @@ pub(super) fn encode_priced_stream(
     input: &mut (impl Read + Seek),
     output: &mut (impl Write + Seek),
 ) -> Result<LzEncodeStats, LzStreamError> {
-    encode_priced_stream_with_model(input, output, RING_LEN, *MAGIC, StandardMatchModel::new())
+    encode_priced_stream_with_model(
+        input,
+        output,
+        RING_LEN,
+        *MAGIC,
+        StandardMatchModel::new(),
+        false,
+    )
 }
 
 pub(super) fn encode_priced_stream_with_model(
@@ -352,6 +359,7 @@ pub(super) fn encode_priced_stream_with_model(
     ring_len: usize,
     magic: [u8; 4],
     mut model: impl BlockByteModel,
+    structural_types: bool,
 ) -> Result<LzEncodeStats, LzStreamError> {
     let input_len = input.seek(SeekFrom::End(0))?;
     if input_len > u64::from(u32::MAX) {
@@ -371,14 +379,16 @@ pub(super) fn encode_priced_stream_with_model(
     let len = usize::try_from(input_len).map_err(|_| LzStreamError::InputTooLarge)?;
     let mut source = WindowInput::new(input, len, ring_len);
     let mut encoder = StreamRangeEncoder::new(&mut *output);
-    let mut types = AdaptiveDistribution::new(3);
+    let mut types = AdaptiveDistribution::new(if structural_types { 2 } else { 3 });
     let mut literal_lengths = AdaptiveDistribution::new(SYMBOLS);
     let mut match_lengths = AdaptiveDistribution::new(SYMBOLS);
     let mut distances = AdaptiveDistribution::new(SYMBOLS);
     let mut position = 0_usize;
+    let mut previous_was_literal = false;
     parse_priced_with(&mut source, |source, block| {
         match block {
             Block::Literal { start, length } => {
+                debug_assert!(!previous_was_literal);
                 debug_assert_eq!(start, position);
                 encode_adaptive_streaming(&mut encoder, &mut types, 0)?;
                 encode_bucket_streaming(&mut encoder, &mut literal_lengths, length - 1)?;
@@ -390,16 +400,20 @@ pub(super) fn encode_priced_stream_with_model(
                     model.update(byte);
                 }
                 position += length;
+                previous_was_literal = true;
             }
             Block::Match { length, distance } => {
                 model.set_phase(None);
-                encode_adaptive_streaming(&mut encoder, &mut types, 1)?;
+                if !structural_types || !previous_was_literal {
+                    encode_adaptive_streaming(&mut encoder, &mut types, 1)?;
+                }
                 encode_bucket_streaming(&mut encoder, &mut match_lengths, length - MIN_MATCH)?;
                 encode_bucket_streaming(&mut encoder, &mut distances, distance - 1)?;
                 for offset in 0..length {
                     model.update(source.byte(position + offset)?);
                 }
                 position += length;
+                previous_was_literal = false;
             }
         }
         Ok(())
@@ -407,7 +421,9 @@ pub(super) fn encode_priced_stream_with_model(
     if position != len {
         return Err(LzError::InvalidArtifact.into());
     }
-    encode_adaptive_streaming(&mut encoder, &mut types, 2)?;
+    if !structural_types {
+        encode_adaptive_streaming(&mut encoder, &mut types, 2)?;
+    }
     let (output, payload_len) = encoder.finish()?;
     let artifact_len = (HEADER_LEN as u64)
         .checked_add(payload_len)
@@ -432,7 +448,14 @@ fn encode_priced_stream_with_ring(
     output: &mut (impl Write + Seek),
     ring_len: usize,
 ) -> Result<LzEncodeStats, LzStreamError> {
-    encode_priced_stream_with_model(input, output, ring_len, *MAGIC, StandardMatchModel::new())
+    encode_priced_stream_with_model(
+        input,
+        output,
+        ring_len,
+        *MAGIC,
+        StandardMatchModel::new(),
+        false,
+    )
 }
 
 fn insert_key(table: &mut [Entry], key: Option<u64>, position: usize) {
