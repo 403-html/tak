@@ -287,6 +287,15 @@ pub fn encode_lz_structural_artifact(input: &[u8]) -> Vec<u8> {
     encode_structural_blocks(input, priced::parse_priced(input))
 }
 
+/// Encodes an RFC 0024 same-distance-coalesced `TKT9` research artifact.
+///
+/// The decoder and artifact syntax are unchanged from RFC 0019.
+#[must_use]
+pub fn encode_lz_coalesced_artifact(input: &[u8]) -> Vec<u8> {
+    let blocks = coalesce_same_distance(priced::parse_priced(input));
+    encode_structural_blocks(input, blocks)
+}
+
 /// Encodes an RFC 0021 structurally repriced `TKT9` research artifact.
 ///
 /// The decoder and artifact syntax are unchanged from RFC 0019.
@@ -2418,6 +2427,58 @@ enum Block {
     Match { length: usize, distance: usize },
 }
 
+fn coalesce_same_distance(blocks: Vec<Block>) -> Vec<Block> {
+    let mut result = Vec::with_capacity(blocks.len());
+    let mut pending: Option<(usize, usize)> = None;
+    for block in blocks {
+        match block {
+            Block::Match { length, distance } => match pending {
+                Some((pending_length, pending_distance)) if pending_distance == distance => {
+                    pending = Some((
+                        pending_length
+                            .checked_add(length)
+                            .expect("parsed match lengths fit usize"),
+                        distance,
+                    ));
+                }
+                Some((pending_length, pending_distance)) => {
+                    append_match_run(&mut result, pending_length, pending_distance);
+                    pending = Some((length, distance));
+                }
+                None => pending = Some((length, distance)),
+            },
+            literal @ Block::Literal { .. } => {
+                if let Some((length, distance)) = pending.take() {
+                    append_match_run(&mut result, length, distance);
+                }
+                result.push(literal);
+            }
+        }
+    }
+    if let Some((length, distance)) = pending {
+        append_match_run(&mut result, length, distance);
+    }
+    result
+}
+
+fn append_match_run(blocks: &mut Vec<Block>, mut length: usize, distance: usize) {
+    while length > MAX_MATCH {
+        let remainder = length - MAX_MATCH;
+        let chunk = if remainder < MIN_MATCH {
+            MAX_MATCH - (MIN_MATCH - remainder)
+        } else {
+            MAX_MATCH
+        };
+        blocks.push(Block::Match {
+            length: chunk,
+            distance,
+        });
+        length -= chunk;
+    }
+    debug_assert!((MIN_MATCH..=MAX_MATCH).contains(&length));
+    blocks.push(Block::Match { length, distance });
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShortBlock {
     Literal { start: usize, length: usize },
@@ -3239,15 +3300,16 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        EXPERT_DIVISORS, EXPERTS, IntegerExpertMixture, LzError, decode_lz_artifact,
-        decode_lz_phase_artifact, decode_lz_phase_stream, decode_lz_short_artifact,
-        decode_lz_stream, decode_lz_structural_artifact, decode_lz_structural_stream,
-        encode_lz_artifact, encode_lz_phase_artifact, encode_lz_phase_stream,
-        encode_lz_priced_artifact, encode_lz_short_artifact, encode_lz_stream,
-        encode_lz_structural_artifact, encode_lz_structural_repriced_artifact,
-        encode_lz_structural_stream, encode_lz_two_candidate_artifact,
-        encode_lz_two_candidate_stream, literal_phase, profile_literal_phase_order2,
-        profile_lz_priced_residual, profile_match_distance_literal, short_match,
+        Block, EXPERT_DIVISORS, EXPERTS, IntegerExpertMixture, LzError, coalesce_same_distance,
+        decode_lz_artifact, decode_lz_phase_artifact, decode_lz_phase_stream,
+        decode_lz_short_artifact, decode_lz_stream, decode_lz_structural_artifact,
+        decode_lz_structural_stream, encode_lz_artifact, encode_lz_coalesced_artifact,
+        encode_lz_phase_artifact, encode_lz_phase_stream, encode_lz_priced_artifact,
+        encode_lz_short_artifact, encode_lz_stream, encode_lz_structural_artifact,
+        encode_lz_structural_repriced_artifact, encode_lz_structural_stream,
+        encode_lz_two_candidate_artifact, encode_lz_two_candidate_stream, literal_phase,
+        profile_literal_phase_order2, profile_lz_priced_residual, profile_match_distance_literal,
+        short_match,
     };
     use crate::HEADER_LEN;
 
@@ -3411,6 +3473,64 @@ mod tests {
             );
             assert!(decode_lz_artifact(&artifact, u64::MAX).is_err());
             assert!(decode_lz_phase_artifact(&artifact, u64::MAX).is_err());
+        }
+    }
+
+    #[test]
+    fn same_distance_coalescing_rebalances_short_remainder() {
+        let blocks = vec![
+            Block::Match {
+                length: 40_000,
+                distance: 17,
+            },
+            Block::Match {
+                length: 25_536,
+                distance: 17,
+            },
+            Block::Literal {
+                start: 65_536,
+                length: 1,
+            },
+            Block::Match {
+                length: 8,
+                distance: 17,
+            },
+        ];
+        assert_eq!(
+            coalesce_same_distance(blocks),
+            vec![
+                Block::Match {
+                    length: 65_528,
+                    distance: 17,
+                },
+                Block::Match {
+                    length: 8,
+                    distance: 17,
+                },
+                Block::Literal {
+                    start: 65_536,
+                    length: 1,
+                },
+                Block::Match {
+                    length: 8,
+                    distance: 17,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn coalesced_artifact_uses_existing_decoder() {
+        for input in [
+            Vec::new(),
+            b"short".to_vec(),
+            b"abcdefghXabcdefghYabcdefghZ".repeat(10_000),
+        ] {
+            let artifact = encode_lz_coalesced_artifact(&input);
+            assert_eq!(
+                decode_lz_structural_artifact(&artifact, input.len() as u64).unwrap(),
+                input
+            );
         }
     }
 
