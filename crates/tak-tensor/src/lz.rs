@@ -367,7 +367,7 @@ pub fn encode_lz_phase_stream(
         *PHASE_MAGIC,
         PhaseMatchModel::new(),
         false,
-        false,
+        priced::ParseProfile::Legacy,
     )
 }
 
@@ -390,7 +390,7 @@ pub fn encode_lz_structural_stream(
         *STRUCTURAL_MAGIC,
         PhaseMatchModel::new(),
         true,
-        false,
+        priced::ParseProfile::Legacy,
     )
 }
 
@@ -403,7 +403,7 @@ pub fn encode_lz_variable_order_stream(
     input: impl Read + Seek,
     output: impl Write + Seek,
 ) -> Result<LzEncodeStats, LzStreamError> {
-    encode_variable_order_with_prices(input, output, false)
+    encode_variable_order_with_prices(input, output, priced::ParseProfile::Legacy)
 }
 
 /// Encodes TK32 with RFC 0034's backoff-aware parse prices.
@@ -415,13 +415,25 @@ pub fn encode_lz_variable_order_repriced_stream(
     input: impl Read + Seek,
     output: impl Write + Seek,
 ) -> Result<LzEncodeStats, LzStreamError> {
-    encode_variable_order_with_prices(input, output, true)
+    encode_variable_order_with_prices(input, output, priced::ParseProfile::Repriced)
+}
+
+/// Encodes TK32 with the additional RFC 0037 match length candidates.
+///
+/// # Errors
+///
+/// Uses the same input and I/O limits as RFC 0032.
+pub fn encode_lz_variable_order_bucket_edges_stream(
+    input: impl Read + Seek,
+    output: impl Write + Seek,
+) -> Result<LzEncodeStats, LzStreamError> {
+    encode_variable_order_with_prices(input, output, priced::ParseProfile::BucketEdges)
 }
 
 fn encode_variable_order_with_prices(
     mut input: impl Read + Seek,
     mut output: impl Write + Seek,
-    reprice_backoff: bool,
+    profile: priced::ParseProfile,
 ) -> Result<LzEncodeStats, LzStreamError> {
     priced::encode_priced_stream_with_model(
         &mut input,
@@ -430,7 +442,7 @@ fn encode_variable_order_with_prices(
         VARIABLE_ORDER_MAGIC,
         variable_order::IntegerVariableOrder::new(),
         true,
-        reprice_backoff,
+        profile,
     )
 }
 
