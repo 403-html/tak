@@ -1,5 +1,5 @@
 use super::variable_order::IntegerVariableOrder;
-use super::{Block, BlockByteModel, literal_phase, priced};
+use super::{Block, BlockByteModel, literal_phase, mixture_bits, priced};
 
 #[derive(Clone, Copy)]
 struct Row {
@@ -36,10 +36,6 @@ fn keys(previous: [u8; 2], byte: u8) -> (usize, usize) {
     let low =
         (usize::from(older & 15) << 8) | (usize::from(newer & 15) << 4) | usize::from(byte >> 4);
     (high, low)
-}
-
-fn mixture_bits(left: f64, right: f64) -> f64 {
-    left.min(right) + 1.0 - (1.0 + 2.0_f64.powf(-(left - right).abs())).log2()
 }
 
 /// Literal prediction costs on the frozen RFC 0034 parse.

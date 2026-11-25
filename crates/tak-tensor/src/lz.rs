@@ -9,9 +9,11 @@ use crate::{HEADER_LEN, crc32, read_u64};
 
 mod nibble;
 mod priced;
+mod relative_distance;
 mod variable_order;
 
 pub use nibble::{NibbleProfile, profile_nibble_mixture};
+pub use relative_distance::{RelativeDistanceProfile, profile_relative_distances};
 pub use variable_order::{VariableOrderProfile, profile_variable_order};
 
 const MAGIC: &[u8; 4] = b"TKLZ";
@@ -2851,6 +2853,10 @@ fn key_at(input: &[u8], position: usize) -> Option<u64> {
 fn table_index(key: u64) -> usize {
     let value = key.wrapping_mul(HASH_MULTIPLIER) >> (64 - TABLE_BITS);
     usize::try_from(value).expect("20-bit index fits usize")
+}
+
+fn mixture_bits(left: f64, right: f64) -> f64 {
+    left.min(right) + 1.0 - (1.0 + 2.0_f64.powf(-(left - right).abs())).log2()
 }
 
 struct AdaptiveDistribution {
