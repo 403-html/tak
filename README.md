@@ -19,10 +19,12 @@ TAK beats gzip -9 on Calgary and enwik9 and beats Zstandard-19 on Calgary.
 | Zstandard -19 | 921,073 |
 | gzip -9 | 1,059,335 |
 
-RFC 0032 is 32,576 bytes above xz. The single-run screen restored all
-18 files exactly. Aggregate throughput was 0.815 MB/s for encoding and
-1.141 MB/s for decoding. Peak RSS was 95,476 KiB and 44,044 KiB,
-respectively. [Full benchmark results](research/experiments/2026-11-25-variable-order.md)
+RFC 0032 is 32,576 bytes above xz. Its single-run encode screen measured
+0.815 MB/s and 95,476 KiB peak RSS. The RFC 0033 decoder reached a median
+1.559 MB/s at 44,060 KiB peak RSS over five repetitions, with exact
+restoration on all files.
+[Codec results](research/experiments/2026-11-25-variable-order.md) ·
+[Decoder results](research/experiments/2026-11-25-tk32-boundary-search.md)
 
 ### enwik9 (1 GB)
 
@@ -33,11 +35,13 @@ respectively. [Full benchmark results](research/experiments/2026-11-25-variable-
 | **TAK (RFC 0032)** | **246.64 MB** |
 | gzip -9 | 322.59 MB |
 
-RFC 0032 encoded at 1.25 MB/s with 238,692 KiB peak RSS. Decoding and
-byte-for-byte comparison reached 2.22 MB/s with 113,824 KiB peak RSS.
-This single-run screen is 30,967,820 bytes above xz and 49,642,016 above M2.
+RFC 0032 encoded at 1.25 MB/s with 238,692 KiB peak RSS. The RFC 0033
+decoder restored and compared every byte at 2.56 MB/s with 113,952 KiB
+peak RSS. The artifact is 30,967,820 bytes above xz and 49,642,016 above M2.
+Encode and decode are separate single-run screens.
 
-[Full benchmark results](research/experiments/2026-11-25-variable-order.md)
+[Codec results](research/experiments/2026-11-25-variable-order.md) ·
+[Decoder results](research/experiments/2026-11-25-tk32-boundary-search.md)
 
 ## Build
 

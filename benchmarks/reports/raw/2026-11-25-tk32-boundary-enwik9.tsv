@@ -1,0 +1,2 @@
+model	source	input_bytes	artifact_bytes	decode_verify_seconds	peak_rss_kib	input_sha256	artifact_sha256	exact_cmp
+boundary-reuse	c2580c0-plus-rfc0033	1000000000	246642016	390.689036440	113952	159b85351e5f76e60cbe32e04c677847a9ecba3adc79addab6f4c6c7aa3744bc	c11cf0bfc462628d55504c0d214170e58c3a0f972eb7ca6de981841032e64756	true

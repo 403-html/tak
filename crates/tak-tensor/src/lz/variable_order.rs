@@ -114,9 +114,18 @@ impl IntegerVariableOrder {
     }
 
     fn boundary(&self, boundary: u16, base: u32, total: u32) -> u32 {
+        Self::compose_boundary(boundary, base, total, self.rows())
+    }
+
+    fn compose_boundary<'a>(
+        boundary: u16,
+        base: u32,
+        total: u32,
+        rows: impl Iterator<Item = &'a Row>,
+    ) -> u32 {
         let prior = u32::try_from(u64::from(SCALE) * u64::from(base) / u64::from(total))
             .expect("cumulative count is bounded by SCALE");
-        self.rows().fold(prior, |value, row| {
+        rows.fold(prior, |value, row| {
             row.blend_prefix(usize::from(boundary), value)
         }) + u32::from(boundary)
     }
@@ -147,20 +156,37 @@ impl BlockByteModel for IntegerVariableOrder {
     }
 
     fn symbol(&self, value: u32) -> (u8, u32, u32, u32) {
-        if !self.active() {
+        if !self.literal || self.base.model.match_prediction().is_some() {
             return self.base.symbol(value);
         }
-        let (mut start, mut end) = (0_u8, u8::MAX);
-        while start < end {
+        let mut rows = [None; 4];
+        for (slot, row) in rows.iter_mut().zip(self.rows()) {
+            *slot = Some(row);
+        }
+        if rows[0].is_none() {
+            return self.base.symbol(value);
+        }
+        let (mut start, mut end) = (0_u16, 256_u16);
+        let (mut low, mut high) = (0, TOTAL);
+        while end - start > 1 {
             let middle = start + (end - start) / 2;
-            if value < self.active_range(middle).1 {
+            let byte = u8::try_from(middle).expect("interior byte boundary is below 256");
+            let (base, _, total) = self.base.model.baseline_range(byte);
+            let boundary = Self::compose_boundary(middle, base, total, rows.into_iter().flatten());
+            if value < boundary {
                 end = middle;
+                high = boundary;
             } else {
-                start = middle + 1;
+                start = middle;
+                low = boundary;
             }
         }
-        let (low, high, total) = self.active_range(start);
-        (start, low, high, total)
+        (
+            u8::try_from(start).expect("lower byte boundary is below 256"),
+            low,
+            high,
+            TOTAL,
+        )
     }
 
     fn update(&mut self, symbol: u8) {
@@ -273,11 +299,12 @@ mod tests {
     #[test]
     fn integer_ranges_partition_and_invert() {
         let mut model = IntegerVariableOrder::new();
-        for &byte in b"abcXabcYabc" {
+        for &byte in b"abcdefXabcdefYabcdef" {
             model.update(byte);
         }
         model.set_phase(Some(0));
         assert!(model.active());
+        assert_eq!(model.rows().count(), 4);
         assert_eq!(model.total(), TOTAL);
         let mut boundary = 0;
         for byte in 0..=u8::MAX {
