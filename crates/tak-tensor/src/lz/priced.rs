@@ -4,8 +4,8 @@ use super::variable_order::IntegerVariableOrder;
 use tak_context::{ByteModel, Match8Model};
 
 use super::{
-    AdaptiveDistribution, Block, BlockByteModel, Entry, HEADER_LEN, LzEncodeStats, LzError,
-    LzStreamError, MAGIC, MAX_DISTANCE, MAX_MATCH, MIN_MATCH, StandardMatchModel,
+    AdaptiveDistribution, Block, BlockByteModel, Entry, HASH_MULTIPLIER, HEADER_LEN, LzEncodeStats,
+    LzError, LzStreamError, MAGIC, MAX_DISTANCE, MAX_MATCH, MIN_MATCH, StandardMatchModel,
     StreamRangeEncoder, TABLE_LEN, encode_adaptive_streaming, encode_bucket_streaming, key_at,
     stream_crc, table_index,
 };
@@ -21,6 +21,7 @@ pub(super) enum ParseProfile {
     Repriced,
     BucketEdges,
     LiteralRunPrices,
+    LongPrefix,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -262,14 +263,16 @@ fn parse_priced_with_table<I: PricedInput>(
 ) -> Result<(), LzStreamError> {
     let input_len = input.len();
     let mut table = ParserTable::new(associative);
+    let mut long_prefix = matches!(profile, ParseProfile::LongPrefix).then(LongPrefixTable::new);
     let mut model = match profile {
         ParseProfile::Legacy => LiteralPrices::Match8(Match8Model::new()),
-        ParseProfile::Repriced | ParseProfile::BucketEdges | ParseProfile::LiteralRunPrices => {
-            LiteralPrices::VariableOrder(IntegerVariableOrder::new())
-        }
+        ParseProfile::Repriced
+        | ParseProfile::BucketEdges
+        | ParseProfile::LiteralRunPrices
+        | ParseProfile::LongPrefix => LiteralPrices::VariableOrder(IntegerVariableOrder::new()),
     };
     let mut emitter = Emitter::new(structural_types);
-    let mut candidates: Vec<[Candidate; 2]> = Vec::with_capacity(SEGMENT_LEN);
+    let mut candidates: Vec<[Candidate; 3]> = Vec::with_capacity(SEGMENT_LEN);
     let mut literal_bits: Vec<f64> = Vec::with_capacity(SEGMENT_LEN);
     let mut position = 0;
     while position < input_len {
@@ -279,12 +282,23 @@ fn parse_priced_with_table<I: PricedInput>(
         let mut forced = None;
         while position < input_len && position - start < SEGMENT_LEN {
             let key = input.key(position)?;
-            let found = find_candidates(input, position, key, &table)?;
-            if found[0].length as usize >= NICE_LENGTH {
-                forced = Some(found[0]);
+            let [longest, nearest] = find_candidates(input, position, key, &table)?;
+            let mut extra = Candidate::default();
+            if let Some(prefix) = &mut long_prefix {
+                if let Some(prior) = prefix.record(input, position, key)? {
+                    if let Some(found) = candidate_at(input, position, prior)? {
+                        if found.length > longest.length {
+                            extra = found;
+                        }
+                    }
+                }
+            }
+            let longest_available = if extra.length > 0 { extra } else { longest };
+            if longest_available.length as usize >= NICE_LENGTH {
+                forced = Some(longest_available);
                 break;
             }
-            candidates.push(found);
+            candidates.push([longest, nearest, extra]);
             let byte = input.byte(position)?;
             literal_bits.push(model.bits(byte));
             table.insert(key, position);
@@ -298,6 +312,11 @@ fn parse_priced_with_table<I: PricedInput>(
             for consumed in position..position + length {
                 let key = input.key(consumed)?;
                 table.insert(key, consumed);
+                if let Some(prefix) = &mut long_prefix {
+                    if consumed != position {
+                        prefix.record(input, consumed, key)?;
+                    }
+                }
                 model.update(input.byte(consumed)?);
             }
             position += length;
@@ -311,6 +330,53 @@ fn parse_priced_with_table<I: PricedInput>(
         sink(input, block)?;
     }
     Ok(())
+}
+
+const LONG_PREFIX_BITS: u32 = 18;
+
+#[derive(Clone, Copy, Default)]
+struct LongPrefixEntry {
+    key: [u64; 2],
+    position: Option<std::num::NonZeroU32>,
+}
+
+struct LongPrefixTable(Vec<LongPrefixEntry>);
+
+impl LongPrefixTable {
+    fn new() -> Self {
+        Self(vec![LongPrefixEntry::default(); 1 << LONG_PREFIX_BITS])
+    }
+
+    fn record(
+        &mut self,
+        input: &mut impl PricedInput,
+        position: usize,
+        first: Option<u64>,
+    ) -> Result<Option<u32>, LzStreamError> {
+        let Some(first) = first else {
+            return Ok(None);
+        };
+        let Some(second) = input.key(position + MIN_MATCH)? else {
+            return Ok(None);
+        };
+        let key = [first, second];
+        let hash = (first ^ second.rotate_left(23)).wrapping_mul(HASH_MULTIPLIER);
+        let index =
+            usize::try_from(hash >> (64 - LONG_PREFIX_BITS)).expect("18-bit index fits usize");
+        let entry = &mut self.0[index];
+        let prior = if entry.key == key {
+            entry.position.map(|position| position.get() - 1)
+        } else {
+            None
+        };
+        let encoded_position =
+            u32::try_from(position + 1).expect("encoder input is bounded to u32");
+        *entry = LongPrefixEntry {
+            key,
+            position: std::num::NonZeroU32::new(encoded_position),
+        };
+        Ok(prior)
+    }
 }
 
 enum ParserTable {
@@ -711,7 +777,7 @@ fn match_lengths(available: usize, bucket_edges: bool) -> impl Iterator<Item = u
 
 fn solve_segment(
     start: usize,
-    candidates: &[[Candidate; 2]],
+    candidates: &[[Candidate; 3]],
     literal_bits: &[f64],
     emitter: &mut Emitter,
     profile: ParseProfile,
@@ -853,9 +919,9 @@ mod tests {
 
     use super::super::{decode_lz_artifact, encode_lz_priced_artifact};
     use super::{
-        Block, Emitter, Entry, ParserTable, Prices, TABLE_LEN, encode_priced_stream,
-        encode_priced_stream_with_ring, initialize_segment_costs, match_lengths, parse_priced,
-        parse_priced_structural,
+        Block, Emitter, Entry, LongPrefixTable, ParserTable, PricedInput, Prices, SliceInput,
+        TABLE_LEN, encode_priced_stream, encode_priced_stream_with_ring, initialize_segment_costs,
+        match_lengths, parse_priced, parse_priced_structural,
     };
 
     fn noise(length: usize, mut state: u64) -> Vec<u8> {
@@ -867,6 +933,29 @@ mod tests {
                 state.to_le_bytes()[0]
             })
             .collect()
+    }
+
+    #[test]
+    fn long_prefix_keeps_distinct_continuations_separate() {
+        let bytes = b"abcdefgh12345678abcdefgh87654321abcdefgh12345678abcdefghi";
+        let mut input = SliceInput(bytes);
+        let mut table = LongPrefixTable::new();
+        for (position, expected) in [(0, None), (16, None), (32, Some(0)), (48, None)] {
+            let first = input.key(position).unwrap();
+            assert_eq!(table.record(&mut input, position, first).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn long_prefix_checks_the_full_key_on_collision() {
+        let prefix = 1_u64.rotate_left(23);
+        let bytes = [0_u64, 0, prefix, 1, 0, 0].map(u64::to_be_bytes).concat();
+        let mut input = SliceInput(&bytes);
+        let mut table = LongPrefixTable::new();
+        for position in [0, 16, 32] {
+            let first = input.key(position).unwrap();
+            assert_eq!(table.record(&mut input, position, first).unwrap(), None);
+        }
     }
 
     #[test]
