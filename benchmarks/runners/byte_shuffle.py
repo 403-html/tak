@@ -17,6 +17,7 @@ WIDTHS = (0, 2, 4, 8)
 ROW_STRIDES = (216, 256, 304)
 DELTA_PARAMETER_OFFSET = 100
 DELTA_WIDTHS = tuple(DELTA_PARAMETER_OFFSET + width for width in WIDTHS[1:])
+BIT_PLANE_PARAMETER = 1
 BLOCK_BYTES = 64 << 10
 SCREEN_ARTIFACT_LIMIT = 32 << 20
 FILE_ARTIFACT_LIMIT = 8 << 30
@@ -25,6 +26,7 @@ MAGIC = b"TBS1"
 HEADER = struct.Struct("<4sBI")
 ROW_MAGIC = b"TRX1"
 DELTA_MAGIC = b"TDS1"
+BIT_PLANE_MAGIC = b"TBP1"
 ROW_HEADER = struct.Struct("<4sHI")
 
 
@@ -56,11 +58,41 @@ def delta_shuffle(block, parameter, inverse=False):
     return transform(differences, width)
 
 
+def transpose_bits(word):
+    # Swap the off-diagonal blocks at each scale of the 8 by 8 matrix.
+    for shift, mask in (
+        (7, 0x00AA00AA00AA00AA),
+        (14, 0x0000CCCC0000CCCC),
+        (28, 0x00000000F0F0F0F0),
+    ):
+        swap = (word ^ (word >> shift)) & mask
+        word ^= swap ^ (swap << shift)
+    return word
+
+
+def bit_plane_shuffle(block, _parameter, inverse=False):
+    result = bytearray(block)
+    groups = len(block) // 8
+    if inverse:
+        for group in range(groups):
+            planes = block[group:8 * groups:groups]
+            result[8 * group:8 * group + 8] = transpose_bits(
+                int.from_bytes(planes, "little")
+            ).to_bytes(8, "little")
+    else:
+        for group in range(groups):
+            word = int.from_bytes(block[8 * group:8 * group + 8], "little")
+            result[group:8 * groups:groups] = transpose_bits(word).to_bytes(8, "little")
+    return result
+
+
 def transform_file(source, output, parameter, *, inverse=False, expected_crc=None):
     if parameter in ROW_STRIDES:
         convert = lag_xor
     elif parameter in DELTA_WIDTHS:
         convert = delta_shuffle
+    elif parameter == BIT_PLANE_PARAMETER:
+        convert = bit_plane_shuffle
     else:
         convert = transform
     crc = 0
@@ -88,6 +120,8 @@ def encode(codec, source, output, parameter):
             header, magic, field = HEADER, DELTA_MAGIC, parameter - DELTA_PARAMETER_OFFSET
         elif parameter in ROW_STRIDES:
             header, magic, field = ROW_HEADER, ROW_MAGIC, parameter
+        elif parameter == BIT_PLANE_PARAMETER:
+            header, magic, field = HEADER, BIT_PLANE_MAGIC, parameter
         else:
             header, magic, field = HEADER, MAGIC, parameter
         subprocess.run([codec, "encode-variable-order-repriced", shuffled, inner], check=True)
@@ -120,6 +154,8 @@ def decode(codec, source, output, limit):
         with source.open("rb") as artifact:
             if magic in (MAGIC, DELTA_MAGIC):
                 header, supported = HEADER, WIDTHS[1:]
+            elif magic == BIT_PLANE_MAGIC:
+                header, supported = HEADER, (BIT_PLANE_PARAMETER,)
             elif magic == ROW_MAGIC:
                 header, supported = ROW_HEADER, ROW_STRIDES
             else:
@@ -177,6 +213,7 @@ def main():
             profiles = command.add_mutually_exclusive_group()
             profiles.add_argument("--row-xor", action="store_true")
             profiles.add_argument("--delta-shuffle", action="store_true")
+            profiles.add_argument("--bit-planes", action="store_true")
         else:
             command.add_argument("output", type=Path)
             command.add_argument("parameter", type=int)
@@ -187,8 +224,10 @@ def main():
             parameters += ROW_STRIDES
         elif args.delta_shuffle:
             parameters += DELTA_WIDTHS
+        elif args.bit_planes:
+            parameters += (BIT_PLANE_PARAMETER,)
         screen(args.codec, args.source, parameters)
-    elif args.operation == "encode" and args.parameter in WIDTHS + ROW_STRIDES + DELTA_WIDTHS:
+    elif args.operation == "encode" and args.parameter in WIDTHS + ROW_STRIDES + DELTA_WIDTHS + (BIT_PLANE_PARAMETER,):
         encode(args.codec, args.source, args.output, args.parameter)
     elif args.operation == "decode" and 0 <= args.parameter <= FILE_INPUT_LIMIT:
         decode(args.codec, args.source, args.output, args.parameter)
