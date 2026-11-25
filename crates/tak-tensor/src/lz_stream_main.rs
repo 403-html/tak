@@ -7,8 +7,8 @@ use tak_tensor::{
     decode_lz_phase_stream, decode_lz_stream, decode_lz_structural_stream,
     decode_lz_variable_order_stream, encode_lz_phase_stream, encode_lz_priced_artifact,
     encode_lz_priced_stream, encode_lz_stream, encode_lz_structural_stream,
-    encode_lz_two_candidate_stream, encode_lz_variable_order_repriced_stream,
-    encode_lz_variable_order_stream,
+    encode_lz_two_candidate_stream, encode_lz_variable_order_bucket_edges_stream,
+    encode_lz_variable_order_repriced_stream, encode_lz_variable_order_stream,
 };
 
 fn main() -> ExitCode {
@@ -32,7 +32,7 @@ fn run() -> Result<(), String> {
         }
         [command, input, output] if command == "encode-phase" => encode_phase(input, output),
         [command, input, output]
-            if matches!(command.as_str(), "encode-structural" | "encode-variable-order" | "encode-variable-order-repriced") =>
+            if matches!(command.as_str(), "encode-structural" | "encode-variable-order" | "encode-variable-order-repriced" | "encode-variable-order-bucket-edges") =>
         {
             encode_structural(input, output, command)
         }
@@ -63,7 +63,7 @@ fn run() -> Result<(), String> {
         }
         _ => {
             Err(
-                "expected encode INPUT OUTPUT, encode-two INPUT OUTPUT, encode-priced INPUT OUTPUT, encode-priced-bounded INPUT OUTPUT, encode-phase INPUT OUTPUT, encode-structural INPUT OUTPUT, decode INPUT OUTPUT --max-output BYTES, decode-phase INPUT OUTPUT --max-output BYTES, or decode-structural INPUT OUTPUT --max-output BYTES"
+                "expected encode INPUT OUTPUT, encode-two INPUT OUTPUT, encode-priced INPUT OUTPUT, encode-priced-bounded INPUT OUTPUT, encode-phase INPUT OUTPUT, encode-structural INPUT OUTPUT, encode-variable-order[-repriced|-bucket-edges] INPUT OUTPUT, decode INPUT OUTPUT --max-output BYTES, decode-phase INPUT OUTPUT --max-output BYTES, or decode-structural INPUT OUTPUT --max-output BYTES"
                     .to_owned(),
             )
         }
@@ -125,6 +125,9 @@ fn encode_structural(input: &str, output: &str, command: &str) -> Result<(), Str
     let input = File::open(input).map_err(|error| error.to_string())?;
     let output = create_new(output)?;
     let result = match command {
+        "encode-variable-order-bucket-edges" => {
+            encode_lz_variable_order_bucket_edges_stream(input, output)
+        }
         "encode-variable-order-repriced" => encode_lz_variable_order_repriced_stream(input, output),
         "encode-variable-order" => encode_lz_variable_order_stream(input, output),
         _ => encode_lz_structural_stream(input, output),

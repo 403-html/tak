@@ -15,6 +15,13 @@ const NICE_LENGTH: usize = 1_024;
 const SHORT_LENGTHS: usize = 64;
 const SYMBOLS: usize = 32;
 
+#[derive(Clone, Copy)]
+pub(super) enum ParseProfile {
+    Legacy,
+    Repriced,
+    BucketEdges,
+}
+
 #[derive(Clone, Copy, Default)]
 struct Candidate {
     length: u32,
@@ -204,7 +211,7 @@ pub(super) fn parse_priced_associative(input: &[u8]) -> Vec<Block> {
 }
 
 pub(super) fn parse_priced_backoff(input: &[u8]) -> Vec<Block> {
-    collect_priced_blocks(input, false, false, true)
+    collect_priced_blocks(input, false, false, ParseProfile::Repriced)
 }
 
 fn parse_priced_mode(input: &[u8], structural_types: bool) -> Vec<Block> {
@@ -216,14 +223,14 @@ fn parse_priced_mode_with_table(
     structural_types: bool,
     associative: bool,
 ) -> Vec<Block> {
-    collect_priced_blocks(input, structural_types, associative, false)
+    collect_priced_blocks(input, structural_types, associative, ParseProfile::Legacy)
 }
 
 fn collect_priced_blocks(
     input: &[u8],
     structural_types: bool,
     associative: bool,
-    reprice_backoff: bool,
+    profile: ParseProfile,
 ) -> Vec<Block> {
     let mut blocks = Vec::new();
     parse_priced_with_table(
@@ -234,7 +241,7 @@ fn collect_priced_blocks(
         },
         structural_types,
         associative,
-        reprice_backoff,
+        profile,
     )
     .expect("in-memory input cannot fail");
     blocks
@@ -245,14 +252,15 @@ fn parse_priced_with_table<I: PricedInput>(
     mut sink: impl FnMut(&mut I, Block) -> Result<(), LzStreamError>,
     structural_types: bool,
     associative: bool,
-    reprice_backoff: bool,
+    profile: ParseProfile,
 ) -> Result<(), LzStreamError> {
     let input_len = input.len();
     let mut table = ParserTable::new(associative);
-    let mut model = if reprice_backoff {
-        LiteralPrices::VariableOrder(IntegerVariableOrder::new())
-    } else {
-        LiteralPrices::Match8(Match8Model::new())
+    let mut model = match profile {
+        ParseProfile::Legacy => LiteralPrices::Match8(Match8Model::new()),
+        ParseProfile::Repriced | ParseProfile::BucketEdges => {
+            LiteralPrices::VariableOrder(IntegerVariableOrder::new())
+        }
     };
     let mut emitter = Emitter::new(structural_types);
     let mut candidates: Vec<[Candidate; 2]> = Vec::with_capacity(SEGMENT_LEN);
@@ -277,7 +285,13 @@ fn parse_priced_with_table<I: PricedInput>(
             model.update(byte);
             position += 1;
         }
-        solve_segment(start, &candidates, &literal_bits, &mut emitter);
+        solve_segment(
+            start,
+            &candidates,
+            &literal_bits,
+            &mut emitter,
+            matches!(profile, ParseProfile::BucketEdges),
+        );
         if let Some(candidate) = forced {
             let length = candidate.length as usize;
             emitter.matched(length, candidate.distance as usize);
@@ -476,7 +490,7 @@ pub(super) fn encode_priced_stream(
         *MAGIC,
         StandardMatchModel::new(),
         false,
-        false,
+        ParseProfile::Legacy,
     )
 }
 
@@ -487,7 +501,7 @@ pub(super) fn encode_priced_stream_with_model(
     magic: [u8; 4],
     mut model: impl BlockByteModel,
     structural_types: bool,
-    reprice_backoff: bool,
+    profile: ParseProfile,
 ) -> Result<LzEncodeStats, LzStreamError> {
     let input_len = input.seek(SeekFrom::End(0))?;
     if input_len > u64::from(u32::MAX) {
@@ -550,7 +564,7 @@ pub(super) fn encode_priced_stream_with_model(
         },
         false,
         false,
-        reprice_backoff,
+        profile,
     )?;
     if position != len {
         return Err(LzError::InvalidArtifact.into());
@@ -589,7 +603,7 @@ fn encode_priced_stream_with_ring(
         *MAGIC,
         StandardMatchModel::new(),
         false,
-        false,
+        ParseProfile::Legacy,
     )
 }
 
@@ -682,11 +696,25 @@ enum Step {
     },
 }
 
+fn match_lengths(available: usize, bucket_edges: bool) -> impl Iterator<Item = usize> {
+    let short_end = available.min(MIN_MATCH + SHORT_LENGTHS - 1);
+    let edges = std::iter::successors(bucket_edges.then_some(2 * SHORT_LENGTHS), |power| {
+        Some(power * 2)
+    })
+    .take_while(move |power| MIN_MATCH - 2 + power < available)
+    .flat_map(|power| [MIN_MATCH - 2 + power, MIN_MATCH - 1 + power])
+    .take_while(move |&length| length < available);
+    (MIN_MATCH..=short_end)
+        .chain(edges)
+        .chain((available > short_end).then_some(available))
+}
+
 fn solve_segment(
     start: usize,
     candidates: &[[Candidate; 2]],
     literal_bits: &[f64],
     emitter: &mut Emitter,
+    bucket_edges: bool,
 ) {
     let count = candidates.len();
     if count == 0 {
@@ -724,10 +752,7 @@ fn solve_segment(
                 continue;
             }
             let distance = candidate.distance as usize;
-            let short_end = available.min(MIN_MATCH + SHORT_LENGTHS - 1);
-            let lengths =
-                (MIN_MATCH..=short_end).chain((available > short_end).then_some(available));
-            for length in lengths {
+            for length in match_lengths(available, bucket_edges) {
                 let cost = base
                     + prices.match_cost(
                         length,
@@ -816,7 +841,7 @@ mod tests {
     use super::super::{decode_lz_artifact, encode_lz_priced_artifact};
     use super::{
         Block, Entry, ParserTable, TABLE_LEN, encode_priced_stream, encode_priced_stream_with_ring,
-        parse_priced, parse_priced_structural,
+        match_lengths, parse_priced, parse_priced_structural,
     };
 
     fn noise(length: usize, mut state: u64) -> Vec<u8> {
@@ -828,6 +853,24 @@ mod tests {
                 state.to_le_bytes()[0]
             })
             .collect()
+    }
+
+    #[test]
+    fn adds_bucket_edges_below_the_maximum_without_duplicates() {
+        for (available, expected) in [
+            (71, vec![]),
+            (100, vec![100]),
+            (134, vec![134]),
+            (135, vec![134, 135]),
+            (312, vec![134, 135, 262, 263, 312]),
+        ] {
+            let lengths: Vec<_> = match_lengths(available, true).skip(64).collect();
+            assert_eq!(lengths, expected);
+        }
+        assert_eq!(
+            match_lengths(312, false).skip(64).collect::<Vec<_>>(),
+            [312]
+        );
     }
 
     #[test]
