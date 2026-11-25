@@ -8,10 +8,10 @@ use tak_tensor::{
     decode_lz_variable_order_stream, encode_lz_phase_stream, encode_lz_priced_artifact,
     encode_lz_priced_stream, encode_lz_stream, encode_lz_structural_stream,
     encode_lz_two_candidate_stream, encode_lz_variable_order_bucket_edges_stream,
-    encode_lz_variable_order_combined_search_stream, encode_lz_variable_order_literal_run_stream,
-    encode_lz_variable_order_long_prefix_stream, encode_lz_variable_order_match_chain_stream,
-    encode_lz_variable_order_repriced_stream, encode_lz_variable_order_shifted_anchor_stream,
-    encode_lz_variable_order_stream,
+    encode_lz_variable_order_chain_shorter_stream, encode_lz_variable_order_combined_search_stream,
+    encode_lz_variable_order_literal_run_stream, encode_lz_variable_order_long_prefix_stream,
+    encode_lz_variable_order_match_chain_stream, encode_lz_variable_order_repriced_stream,
+    encode_lz_variable_order_shifted_anchor_stream, encode_lz_variable_order_stream,
 };
 
 fn main() -> ExitCode {
@@ -35,7 +35,7 @@ fn run() -> Result<(), String> {
         }
         [command, input, output] if command == "encode-phase" => encode_phase(input, output),
         [command, input, output]
-            if matches!(command.as_str(), "encode-structural" | "encode-variable-order" | "encode-variable-order-repriced" | "encode-variable-order-bucket-edges" | "encode-variable-order-literal-run" | "encode-variable-order-long-prefix" | "encode-variable-order-shifted-anchor" | "encode-variable-order-combined-search" | "encode-variable-order-match-chain") =>
+            if matches!(command.as_str(), "encode-structural" | "encode-variable-order" | "encode-variable-order-repriced" | "encode-variable-order-bucket-edges" | "encode-variable-order-literal-run" | "encode-variable-order-long-prefix" | "encode-variable-order-shifted-anchor" | "encode-variable-order-combined-search" | "encode-variable-order-match-chain" | "encode-variable-order-chain-shorter") =>
         {
             encode_structural(input, output, command)
         }
@@ -66,7 +66,7 @@ fn run() -> Result<(), String> {
         }
         _ => {
             Err(
-                "expected encode INPUT OUTPUT, encode-two INPUT OUTPUT, encode-priced INPUT OUTPUT, encode-priced-bounded INPUT OUTPUT, encode-phase INPUT OUTPUT, encode-structural INPUT OUTPUT, encode-variable-order[-repriced|-bucket-edges|-literal-run|-long-prefix|-shifted-anchor|-combined-search|-match-chain] INPUT OUTPUT, decode INPUT OUTPUT --max-output BYTES, decode-phase INPUT OUTPUT --max-output BYTES, or decode-structural INPUT OUTPUT --max-output BYTES"
+                "expected encode INPUT OUTPUT, encode-two INPUT OUTPUT, encode-priced INPUT OUTPUT, encode-priced-bounded INPUT OUTPUT, encode-phase INPUT OUTPUT, encode-structural INPUT OUTPUT, encode-variable-order[-repriced|-bucket-edges|-literal-run|-long-prefix|-shifted-anchor|-combined-search|-match-chain|-chain-shorter] INPUT OUTPUT, decode INPUT OUTPUT --max-output BYTES, decode-phase INPUT OUTPUT --max-output BYTES, or decode-structural INPUT OUTPUT --max-output BYTES"
                     .to_owned(),
             )
         }
@@ -142,6 +142,9 @@ fn encode_structural(input: &str, output: &str, command: &str) -> Result<(), Str
         }
         "encode-variable-order-combined-search" => {
             encode_lz_variable_order_combined_search_stream(input, output)
+        }
+        "encode-variable-order-chain-shorter" => {
+            encode_lz_variable_order_chain_shorter_stream(input, output)
         }
         "encode-variable-order-match-chain" => {
             encode_lz_variable_order_match_chain_stream(input, output)
