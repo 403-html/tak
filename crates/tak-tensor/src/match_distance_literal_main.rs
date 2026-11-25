@@ -1,6 +1,8 @@
 use std::{env, fs, path::PathBuf, process::ExitCode, time::Instant};
 
-use tak_tensor::{profile_match_distance_literal, profile_short_suffix_backoff};
+use tak_tensor::{
+    profile_match_distance_literal, profile_short_suffix_backoff, profile_variable_order,
+};
 
 fn main() -> ExitCode {
     match run() {
@@ -14,9 +16,11 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
-    let (short_suffix, args) = match args.as_slice() {
-        [flag, rest @ ..] if flag == "--short-suffix" => (true, rest),
-        rest => (false, rest),
+    let (experiment, args) = match args.as_slice() {
+        [flag, rest @ ..] if matches!(flag.as_str(), "--short-suffix" | "--variable-order") => {
+            (flag.as_str(), rest)
+        }
+        rest => ("", rest),
     };
     let (path, tail_bytes) = match args {
         [path] => (PathBuf::from(path), None),
@@ -28,7 +32,11 @@ fn run() -> Result<(), String> {
                     .map_err(|_| "tail-bytes must be a nonnegative integer")?,
             ),
         ),
-        _ => return Err("expected [--short-suffix] INPUT [--tail-bytes N]".to_owned()),
+        _ => {
+            return Err(
+                "expected [--short-suffix|--variable-order] INPUT [--tail-bytes N]".to_owned(),
+            );
+        }
     };
     let input = fs::read(path).map_err(|error| error.to_string())?;
     let input = if let Some(bytes) = tail_bytes {
@@ -42,7 +50,25 @@ fn run() -> Result<(), String> {
     };
 
     let start = Instant::now();
-    let profile = if short_suffix {
+    if experiment == "--variable-order" {
+        let profile = profile_variable_order(input);
+        println!(
+            "input_bytes\tliterals\teligible\tcontrol_bits\tppm_bits\tsingleton_bits\ttable_bytes\tseconds"
+        );
+        println!(
+            "{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{}\t{:.9}",
+            input.len(),
+            profile.literals,
+            profile.eligible,
+            profile.control_bits,
+            profile.ppm_bits,
+            profile.singleton_bits,
+            profile.table_bytes,
+            start.elapsed().as_secs_f64(),
+        );
+        return Ok(());
+    }
+    let profile = if experiment == "--short-suffix" {
         profile_short_suffix_backoff(input)
     } else {
         profile_match_distance_literal(input)

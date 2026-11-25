@@ -4,11 +4,25 @@
 
 TAK is an experimental, lossless compression project written in Rust. It explores classical and **tensor-network-based** compression methods, with a focus on compression ratio, speed, and memory efficiency.
 
-The current classical research model beats gzip -9 on Calgary and enwik9, but remains behind xz and Zstandard-19.
+TAK beats gzip -9 on Calgary and enwik9 and beats Zstandard-19 on Calgary.
 
 **Status**: _Experimental_. The best-performing model is not yet integrated into the main CLI. Formats are unstable and should not be used for long-term storage.
 
 ## Benchmarks
+
+### Calgary (independent files)
+
+| Compressor | Compressed bytes |
+|---|---:|
+| xz -9 | 885,860 |
+| **TAK (RFC 0032)** | **918,436** |
+| Zstandard -19 | 921,073 |
+| gzip -9 | 1,059,335 |
+
+RFC 0032 is 32,576 bytes above xz. The single-run screen restored all
+18 files exactly. Aggregate throughput was 0.815 MB/s for encoding and
+1.141 MB/s for decoding. Peak RSS was 95,476 KiB and 44,044 KiB,
+respectively. [Full benchmark results](research/experiments/2026-11-25-variable-order.md)
 
 ### enwik9 (1 GB)
 
@@ -16,14 +30,14 @@ The current classical research model beats gzip -9 on Calgary and enwik9, but re
 |---|---:|
 | xz -9 | 215.67 MB |
 | Zstandard -19 | 235.33 MB |
-| **TAK (RFC 0019)** | **249.76 MB** |
+| **TAK (RFC 0032)** | **246.64 MB** |
 | gzip -9 | 322.59 MB |
 
-**TAK performance:** 1.59 MB/s compression with 220,912 KiB peak RSS and
-8.94 MB/s decompression with 96,024 KiB peak RSS. Exact SHA-256-verified
-restoration. This bounded reference path prioritizes evidence over speed.
+RFC 0032 encoded at 1.25 MB/s with 238,692 KiB peak RSS. Decoding and
+byte-for-byte comparison reached 2.22 MB/s with 113,824 KiB peak RSS.
+This single-run screen is 30,967,820 bytes above xz and 49,642,016 above M2.
 
-[Full benchmark results](research/experiments/2026-11-24-structural-lz-block-types.md)
+[Full benchmark results](research/experiments/2026-11-25-variable-order.md)
 
 ## Build
 
@@ -325,6 +339,11 @@ RFC 0031 tested nine reversible lag-XOR transforms with the RFC 0019
 encoder. After wrapper overhead, only Calgary's `geo` improved, by 215
 bytes. All 290 Calgary and Canterbury trials restored exactly. The
 experiment ended at complete-artifact screening.
+
+RFC 0032 blends bounded counts from suffix orders three through six into
+the literal model. Singleton-weighted backoff saves 24,018 bytes on Calgary,
+26,211 bytes on independent Canterbury, and 3,120,865 bytes on enwik9.
+All streams restore exactly. The cumulative-range search slows decoding.
 
 Reproduce the RFC 0002 tensor artifact with:
 

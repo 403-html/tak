@@ -4,9 +4,10 @@ use std::path::Path;
 use std::{env, process::ExitCode};
 
 use tak_tensor::{
-    decode_lz_phase_stream, decode_lz_stream, decode_lz_structural_stream, encode_lz_phase_stream,
-    encode_lz_priced_artifact, encode_lz_priced_stream, encode_lz_stream,
-    encode_lz_structural_stream, encode_lz_two_candidate_stream,
+    decode_lz_phase_stream, decode_lz_stream, decode_lz_structural_stream,
+    decode_lz_variable_order_stream, encode_lz_phase_stream, encode_lz_priced_artifact,
+    encode_lz_priced_stream, encode_lz_stream, encode_lz_structural_stream,
+    encode_lz_two_candidate_stream, encode_lz_variable_order_stream,
 };
 
 fn main() -> ExitCode {
@@ -29,8 +30,10 @@ fn run() -> Result<(), String> {
             encode_priced_bounded(input, output)
         }
         [command, input, output] if command == "encode-phase" => encode_phase(input, output),
-        [command, input, output] if command == "encode-structural" => {
-            encode_structural(input, output)
+        [command, input, output]
+            if matches!(command.as_str(), "encode-structural" | "encode-variable-order") =>
+        {
+            encode_structural(input, output, command == "encode-variable-order")
         }
         [command, input, output, option, limit]
             if command == "decode" && option == "--max-output" =>
@@ -49,12 +52,13 @@ fn run() -> Result<(), String> {
             decode_phase(input, output, limit)
         }
         [command, input, output, option, limit]
-            if command == "decode-structural" && option == "--max-output" =>
+            if matches!(command.as_str(), "decode-structural" | "decode-variable-order")
+                && option == "--max-output" =>
         {
             let limit = limit
                 .parse::<u64>()
                 .map_err(|_| "max-output must be a nonnegative integer")?;
-            decode_structural(input, output, limit)
+            decode_structural(input, output, limit, command == "decode-variable-order")
         }
         _ => {
             Err(
@@ -115,13 +119,16 @@ fn encode_phase(input: &str, output: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn encode_structural(input: &str, output: &str) -> Result<(), String> {
+fn encode_structural(input: &str, output: &str, variable_order: bool) -> Result<(), String> {
     require_new_output(output)?;
     let input = File::open(input).map_err(|error| error.to_string())?;
     let output = create_new(output)?;
-    encode_lz_structural_stream(input, output)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    let result = if variable_order {
+        encode_lz_variable_order_stream(input, output)
+    } else {
+        encode_lz_structural_stream(input, output)
+    };
+    result.map(|_| ()).map_err(|error| error.to_string())
 }
 
 fn decode(input: &str, output: &str, max_output: u64) -> Result<(), String> {
@@ -142,13 +149,27 @@ fn decode_phase(input: &str, output: &str, max_output: u64) -> Result<(), String
         .map_err(|error| error.to_string())
 }
 
-fn decode_structural(input: &str, output: &str, max_output: u64) -> Result<(), String> {
+fn decode_structural(
+    input: &str,
+    output: &str,
+    max_output: u64,
+    variable_order: bool,
+) -> Result<(), String> {
+    if variable_order && output == "-" {
+        let input = File::open(input).map_err(|error| error.to_string())?;
+        return decode_lz_variable_order_stream(input, std::io::stdout().lock(), max_output)
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    }
     require_new_output(output)?;
     let input = File::open(input).map_err(|error| error.to_string())?;
     let output = create_new(output)?;
-    decode_lz_structural_stream(input, output, max_output)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    let result = if variable_order {
+        decode_lz_variable_order_stream(input, output, max_output)
+    } else {
+        decode_lz_structural_stream(input, output, max_output)
+    };
+    result.map(|_| ()).map_err(|error| error.to_string())
 }
 
 fn require_new_output(path: &str) -> Result<(), String> {
