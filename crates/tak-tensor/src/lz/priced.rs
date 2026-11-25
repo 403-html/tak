@@ -22,6 +22,7 @@ pub(super) enum ParseProfile {
     BucketEdges,
     LiteralRunPrices,
     LongPrefix,
+    ShiftedAnchor,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -269,8 +270,10 @@ fn parse_priced_with_table<I: PricedInput>(
         ParseProfile::Repriced
         | ParseProfile::BucketEdges
         | ParseProfile::LiteralRunPrices
-        | ParseProfile::LongPrefix => LiteralPrices::VariableOrder(IntegerVariableOrder::new()),
+        | ParseProfile::LongPrefix
+        | ParseProfile::ShiftedAnchor => LiteralPrices::VariableOrder(IntegerVariableOrder::new()),
     };
+    let shifted_anchor = matches!(profile, ParseProfile::ShiftedAnchor);
     let mut emitter = Emitter::new(structural_types);
     let mut candidates: Vec<[Candidate; 3]> = Vec::with_capacity(SEGMENT_LEN);
     let mut literal_bits: Vec<f64> = Vec::with_capacity(SEGMENT_LEN);
@@ -292,6 +295,11 @@ fn parse_priced_with_table<I: PricedInput>(
                         }
                     }
                 }
+            }
+            if shifted_anchor {
+                extra = find_shifted_candidate(input, position, key, &table)?
+                    .filter(|found| found.length > longest.length)
+                    .unwrap_or_default();
             }
             let longest_available = if extra.length > 0 { extra } else { longest };
             if longest_available.length as usize >= NICE_LENGTH {
@@ -706,6 +714,32 @@ fn find_candidates<I: PricedInput>(
     Ok(found)
 }
 
+fn find_shifted_candidate(
+    input: &mut impl PricedInput,
+    position: usize,
+    key: Option<u64>,
+    table: &ParserTable,
+) -> Result<Option<Candidate>, LzStreamError> {
+    const SHIFT: u32 = 4;
+    let Some(key) = key else {
+        return Ok(None);
+    };
+    let Some(shifted_key) = input.key(position + SHIFT as usize)? else {
+        return Ok(None);
+    };
+    let Some(source) = table
+        .entry(shifted_key)
+        .and_then(|entry| entry.position.checked_sub(SHIFT))
+    else {
+        return Ok(None);
+    };
+    let source_index = usize::try_from(source).expect("source fits usize");
+    if position - source_index > MAX_DISTANCE || input.key(source_index)? != Some(key) {
+        return Ok(None);
+    }
+    candidate_at(input, position, source)
+}
+
 fn candidate_at<I: PricedInput>(
     input: &mut I,
     position: usize,
@@ -920,8 +954,8 @@ mod tests {
     use super::super::{decode_lz_artifact, encode_lz_priced_artifact};
     use super::{
         Block, Emitter, Entry, LongPrefixTable, ParserTable, PricedInput, Prices, SliceInput,
-        TABLE_LEN, encode_priced_stream, encode_priced_stream_with_ring, initialize_segment_costs,
-        match_lengths, parse_priced, parse_priced_structural,
+        TABLE_LEN, encode_priced_stream, encode_priced_stream_with_ring, find_shifted_candidate,
+        initialize_segment_costs, match_lengths, parse_priced, parse_priced_structural,
     };
 
     fn noise(length: usize, mut state: u64) -> Vec<u8> {
@@ -933,6 +967,37 @@ mod tests {
                 state.to_le_bytes()[0]
             })
             .collect()
+    }
+
+    #[test]
+    fn shifted_anchor_can_recover_an_older_source() {
+        let bytes = b"abcdefgh12345678abcdefgh99999999abcdefgh12345678";
+        let mut input = SliceInput(bytes);
+        let mut table = ParserTable::new(false);
+        for position in 0..32 {
+            table.insert(input.key(position).unwrap(), position);
+        }
+        let first = input.key(32).unwrap();
+        let found = find_shifted_candidate(&mut input, 32, first, &table)
+            .unwrap()
+            .unwrap();
+        assert_eq!((found.distance, found.length), (32, 16));
+    }
+
+    #[test]
+    fn shifted_anchor_requires_the_original_prefix() {
+        let bytes = b"zzzzefgh12345678abcdefgh12345678end";
+        let mut input = SliceInput(bytes);
+        let mut table = ParserTable::new(false);
+        for position in 0..16 {
+            table.insert(input.key(position).unwrap(), position);
+        }
+        let first = input.key(16).unwrap();
+        assert!(
+            find_shifted_candidate(&mut input, 16, first, &table)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
