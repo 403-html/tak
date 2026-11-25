@@ -7,7 +7,8 @@ use tak_tensor::{
     decode_lz_phase_stream, decode_lz_stream, decode_lz_structural_stream,
     decode_lz_variable_order_stream, encode_lz_phase_stream, encode_lz_priced_artifact,
     encode_lz_priced_stream, encode_lz_stream, encode_lz_structural_stream,
-    encode_lz_two_candidate_stream, encode_lz_variable_order_stream,
+    encode_lz_two_candidate_stream, encode_lz_variable_order_repriced_stream,
+    encode_lz_variable_order_stream,
 };
 
 fn main() -> ExitCode {
@@ -31,9 +32,9 @@ fn run() -> Result<(), String> {
         }
         [command, input, output] if command == "encode-phase" => encode_phase(input, output),
         [command, input, output]
-            if matches!(command.as_str(), "encode-structural" | "encode-variable-order") =>
+            if matches!(command.as_str(), "encode-structural" | "encode-variable-order" | "encode-variable-order-repriced") =>
         {
-            encode_structural(input, output, command == "encode-variable-order")
+            encode_structural(input, output, command)
         }
         [command, input, output, option, limit]
             if command == "decode" && option == "--max-output" =>
@@ -119,14 +120,14 @@ fn encode_phase(input: &str, output: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn encode_structural(input: &str, output: &str, variable_order: bool) -> Result<(), String> {
+fn encode_structural(input: &str, output: &str, command: &str) -> Result<(), String> {
     require_new_output(output)?;
     let input = File::open(input).map_err(|error| error.to_string())?;
     let output = create_new(output)?;
-    let result = if variable_order {
-        encode_lz_variable_order_stream(input, output)
-    } else {
-        encode_lz_structural_stream(input, output)
+    let result = match command {
+        "encode-variable-order-repriced" => encode_lz_variable_order_repriced_stream(input, output),
+        "encode-variable-order" => encode_lz_variable_order_stream(input, output),
+        _ => encode_lz_structural_stream(input, output),
     };
     result.map(|_| ()).map_err(|error| error.to_string())
 }

@@ -363,6 +363,7 @@ pub fn encode_lz_phase_stream(
         *PHASE_MAGIC,
         PhaseMatchModel::new(),
         false,
+        false,
     )
 }
 
@@ -385,6 +386,7 @@ pub fn encode_lz_structural_stream(
         *STRUCTURAL_MAGIC,
         PhaseMatchModel::new(),
         true,
+        false,
     )
 }
 
@@ -394,8 +396,28 @@ pub fn encode_lz_structural_stream(
 ///
 /// Uses the same input and I/O limits as RFC 0019.
 pub fn encode_lz_variable_order_stream(
+    input: impl Read + Seek,
+    output: impl Write + Seek,
+) -> Result<LzEncodeStats, LzStreamError> {
+    encode_variable_order_with_prices(input, output, false)
+}
+
+/// Encodes TK32 with RFC 0034's backoff-aware parse prices.
+///
+/// # Errors
+///
+/// Uses the same input and I/O limits as RFC 0032.
+pub fn encode_lz_variable_order_repriced_stream(
+    input: impl Read + Seek,
+    output: impl Write + Seek,
+) -> Result<LzEncodeStats, LzStreamError> {
+    encode_variable_order_with_prices(input, output, true)
+}
+
+fn encode_variable_order_with_prices(
     mut input: impl Read + Seek,
     mut output: impl Write + Seek,
+    reprice_backoff: bool,
 ) -> Result<LzEncodeStats, LzStreamError> {
     priced::encode_priced_stream_with_model(
         &mut input,
@@ -404,6 +426,7 @@ pub fn encode_lz_variable_order_stream(
         VARIABLE_ORDER_MAGIC,
         variable_order::IntegerVariableOrder::new(),
         true,
+        reprice_backoff,
     )
 }
 
