@@ -1,4 +1,5 @@
 use super::{Block, BlockByteModel, HASH_MULTIPLIER, PhaseMatchModel, literal_phase, priced};
+use tak_context::ByteModel;
 
 const ORDERS: std::ops::RangeInclusive<usize> = 3..=6;
 const ROW_BITS: u32 = 13;
@@ -110,7 +111,19 @@ impl IntegerVariableOrder {
     }
 
     fn active(&self) -> bool {
-        self.literal && self.base.model.match_prediction().is_none() && self.rows().next().is_some()
+        self.literal && self.has_backoff()
+    }
+
+    fn has_backoff(&self) -> bool {
+        self.base.model.match_prediction().is_none() && self.rows().next().is_some()
+    }
+
+    pub(super) fn parser_range(&self, byte: u8) -> (u32, u32, u32) {
+        if self.has_backoff() {
+            self.active_range(byte)
+        } else {
+            self.base.model.range(byte)
+        }
     }
 
     fn boundary(&self, boundary: u16, base: u32, total: u32) -> u32 {
@@ -295,6 +308,21 @@ pub fn profile_variable_order(input: &[u8]) -> VariableOrderProfile {
 #[cfg(test)]
 mod tests {
     use super::{BlockByteModel, IntegerVariableOrder, Row, TOTAL};
+    use tak_context::ByteModel;
+
+    #[test]
+    fn parser_prices_use_backoff_without_a_literal_phase() {
+        let mut model = IntegerVariableOrder::new();
+        assert_eq!(model.parser_range(b'a'), model.base.model.range(b'a'));
+        for &byte in b"abcdefXabcdefYabcdef" {
+            model.update(byte);
+        }
+        assert!(!model.active());
+        let priced = model.parser_range(b'X');
+        assert_eq!(priced.2, TOTAL);
+        model.set_phase(Some(0));
+        assert_eq!(model.range(b'X'), priced);
+    }
 
     #[test]
     fn integer_ranges_partition_and_invert() {

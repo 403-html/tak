@@ -1,5 +1,6 @@
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
+use super::variable_order::IntegerVariableOrder;
 use tak_context::{ByteModel, Match8Model};
 
 use super::{
@@ -220,24 +221,10 @@ fn parse_priced_mode_with_table(
         },
         structural_types,
         associative,
+        false,
     )
     .expect("in-memory input cannot fail");
     blocks
-}
-
-pub(super) fn parse_priced_with<I: PricedInput>(
-    input: &mut I,
-    sink: impl FnMut(&mut I, Block) -> Result<(), LzStreamError>,
-) -> Result<(), LzStreamError> {
-    parse_priced_with_mode(input, sink, false)
-}
-
-fn parse_priced_with_mode<I: PricedInput>(
-    input: &mut I,
-    sink: impl FnMut(&mut I, Block) -> Result<(), LzStreamError>,
-    structural_types: bool,
-) -> Result<(), LzStreamError> {
-    parse_priced_with_table(input, sink, structural_types, false)
 }
 
 fn parse_priced_with_table<I: PricedInput>(
@@ -245,10 +232,15 @@ fn parse_priced_with_table<I: PricedInput>(
     mut sink: impl FnMut(&mut I, Block) -> Result<(), LzStreamError>,
     structural_types: bool,
     associative: bool,
+    reprice_backoff: bool,
 ) -> Result<(), LzStreamError> {
     let input_len = input.len();
     let mut table = ParserTable::new(associative);
-    let mut model = Match8Model::new();
+    let mut model = if reprice_backoff {
+        LiteralPrices::VariableOrder(IntegerVariableOrder::new())
+    } else {
+        LiteralPrices::Match8(Match8Model::new())
+    };
     let mut emitter = Emitter::new(structural_types);
     let mut candidates: Vec<[Candidate; 2]> = Vec::with_capacity(SEGMENT_LEN);
     let mut literal_bits: Vec<f64> = Vec::with_capacity(SEGMENT_LEN);
@@ -267,7 +259,7 @@ fn parse_priced_with_table<I: PricedInput>(
             }
             candidates.push(found);
             let byte = input.byte(position)?;
-            literal_bits.push(model_bits(&model, byte));
+            literal_bits.push(model.bits(byte));
             table.insert(key, position);
             model.update(byte);
             position += 1;
@@ -471,6 +463,7 @@ pub(super) fn encode_priced_stream(
         *MAGIC,
         StandardMatchModel::new(),
         false,
+        false,
     )
 }
 
@@ -481,6 +474,7 @@ pub(super) fn encode_priced_stream_with_model(
     magic: [u8; 4],
     mut model: impl BlockByteModel,
     structural_types: bool,
+    reprice_backoff: bool,
 ) -> Result<LzEncodeStats, LzStreamError> {
     let input_len = input.seek(SeekFrom::End(0))?;
     if input_len > u64::from(u32::MAX) {
@@ -506,39 +500,45 @@ pub(super) fn encode_priced_stream_with_model(
     let mut distances = AdaptiveDistribution::new(SYMBOLS);
     let mut position = 0_usize;
     let mut previous_was_literal = false;
-    parse_priced_with(&mut source, |source, block| {
-        match block {
-            Block::Literal { start, length } => {
-                debug_assert!(!previous_was_literal);
-                debug_assert_eq!(start, position);
-                encode_adaptive_streaming(&mut encoder, &mut types, 0)?;
-                encode_bucket_streaming(&mut encoder, &mut literal_lengths, length - 1)?;
-                for offset in 0..length {
-                    model.set_phase(Some(super::literal_phase(offset)));
-                    let byte = source.byte(start + offset)?;
-                    let (low, high, total) = model.range(byte);
-                    encoder.encode(low, high, total)?;
-                    model.update(byte);
+    parse_priced_with_table(
+        &mut source,
+        |source, block| {
+            match block {
+                Block::Literal { start, length } => {
+                    debug_assert!(!previous_was_literal);
+                    debug_assert_eq!(start, position);
+                    encode_adaptive_streaming(&mut encoder, &mut types, 0)?;
+                    encode_bucket_streaming(&mut encoder, &mut literal_lengths, length - 1)?;
+                    for offset in 0..length {
+                        model.set_phase(Some(super::literal_phase(offset)));
+                        let byte = source.byte(start + offset)?;
+                        let (low, high, total) = model.range(byte);
+                        encoder.encode(low, high, total)?;
+                        model.update(byte);
+                    }
+                    position += length;
+                    previous_was_literal = true;
                 }
-                position += length;
-                previous_was_literal = true;
+                Block::Match { length, distance } => {
+                    model.set_phase(None);
+                    if !structural_types || !previous_was_literal {
+                        encode_adaptive_streaming(&mut encoder, &mut types, 1)?;
+                    }
+                    encode_bucket_streaming(&mut encoder, &mut match_lengths, length - MIN_MATCH)?;
+                    encode_bucket_streaming(&mut encoder, &mut distances, distance - 1)?;
+                    for offset in 0..length {
+                        model.update(source.byte(position + offset)?);
+                    }
+                    position += length;
+                    previous_was_literal = false;
+                }
             }
-            Block::Match { length, distance } => {
-                model.set_phase(None);
-                if !structural_types || !previous_was_literal {
-                    encode_adaptive_streaming(&mut encoder, &mut types, 1)?;
-                }
-                encode_bucket_streaming(&mut encoder, &mut match_lengths, length - MIN_MATCH)?;
-                encode_bucket_streaming(&mut encoder, &mut distances, distance - 1)?;
-                for offset in 0..length {
-                    model.update(source.byte(position + offset)?);
-                }
-                position += length;
-                previous_was_literal = false;
-            }
-        }
-        Ok(())
-    })?;
+            Ok(())
+        },
+        false,
+        false,
+        reprice_backoff,
+    )?;
     if position != len {
         return Err(LzError::InvalidArtifact.into());
     }
@@ -575,6 +575,7 @@ fn encode_priced_stream_with_ring(
         ring_len,
         *MAGIC,
         StandardMatchModel::new(),
+        false,
         false,
     )
 }
@@ -632,9 +633,26 @@ fn candidate_at<I: PricedInput>(
     }))
 }
 
-fn model_bits(model: &Match8Model, byte: u8) -> f64 {
-    let (low, high, total) = model.range(byte);
-    f64::from(total).log2() - f64::from(high - low).log2()
+enum LiteralPrices {
+    Match8(Match8Model),
+    VariableOrder(IntegerVariableOrder),
+}
+
+impl LiteralPrices {
+    fn bits(&self, byte: u8) -> f64 {
+        let (low, high, total) = match self {
+            Self::Match8(model) => model.range(byte),
+            Self::VariableOrder(model) => model.parser_range(byte),
+        };
+        f64::from(total).log2() - f64::from(high - low).log2()
+    }
+
+    fn update(&mut self, byte: u8) {
+        match self {
+            Self::Match8(model) => model.update(byte),
+            Self::VariableOrder(model) => model.update(byte),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
