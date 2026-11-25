@@ -24,11 +24,11 @@ pub use lz::{
     encode_lz_structural_stream, encode_lz_two_candidate_artifact, encode_lz_two_candidate_stream,
     encode_lz_variable_order_bucket_edges_stream, encode_lz_variable_order_combined_search_stream,
     encode_lz_variable_order_literal_run_stream, encode_lz_variable_order_long_prefix_stream,
-    encode_lz_variable_order_repriced_stream, encode_lz_variable_order_shifted_anchor_stream,
-    encode_lz_variable_order_stream, profile_length_conditioned_distance,
-    profile_literal_only_counts, profile_literal_phase_order2, profile_lz_priced_residual,
-    profile_match_distance_literal, profile_nibble_mixture, profile_relative_distances,
-    profile_short_suffix_backoff, profile_variable_order,
+    encode_lz_variable_order_match_chain_stream, encode_lz_variable_order_repriced_stream,
+    encode_lz_variable_order_shifted_anchor_stream, encode_lz_variable_order_stream,
+    profile_length_conditioned_distance, profile_literal_only_counts, profile_literal_phase_order2,
+    profile_lz_priced_residual, profile_match_distance_literal, profile_nibble_mixture,
+    profile_relative_distances, profile_short_suffix_backoff, profile_variable_order,
 };
 pub use match8::{
     decode_match8_artifact, decode_match8_stream, encode_match8_artifact, encode_match8_stream,
