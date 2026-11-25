@@ -454,6 +454,18 @@ pub fn encode_lz_variable_order_long_prefix_stream(
     encode_variable_order_with_prices(input, output, priced::ParseProfile::LongPrefix)
 }
 
+/// Encodes TK32 with RFC 0044's shifted match lookup.
+///
+/// # Errors
+///
+/// Uses the same input and I/O limits as RFC 0032.
+pub fn encode_lz_variable_order_shifted_anchor_stream(
+    input: impl Read + Seek,
+    output: impl Write + Seek,
+) -> Result<LzEncodeStats, LzStreamError> {
+    encode_variable_order_with_prices(input, output, priced::ParseProfile::ShiftedAnchor)
+}
+
 fn encode_variable_order_with_prices(
     mut input: impl Read + Seek,
     mut output: impl Write + Seek,
