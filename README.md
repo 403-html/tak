@@ -4,11 +4,25 @@
 
 TAK is an experimental, lossless compression project written in Rust. It explores classical and **tensor-network-based** compression methods, with a focus on compression ratio, speed, and memory efficiency.
 
-The current classical research model beats gzip -9 on Calgary and enwik9, but remains behind xz and Zstandard-19.
+TAK beats gzip -9 on Calgary and enwik9 and beats Zstandard-19 on Calgary.
 
 **Status**: _Experimental_. The best-performing model is not yet integrated into the main CLI. Formats are unstable and should not be used for long-term storage.
 
 ## Benchmarks
+
+### Calgary (independent files)
+
+| Compressor | Compressed bytes |
+|---|---:|
+| xz -9 | 885,860 |
+| **TAK (RFC 0032)** | **918,436** |
+| Zstandard -19 | 921,073 |
+| gzip -9 | 1,059,335 |
+
+RFC 0032 is 32,576 bytes above xz. The single-run screen restored all
+18 files exactly. Aggregate throughput was 0.815 MB/s for encoding and
+1.141 MB/s for decoding. Peak RSS was 95,476 KiB and 44,044 KiB,
+respectively. [Full benchmark results](research/experiments/2026-11-25-variable-order.md)
 
 ### enwik9 (1 GB)
 

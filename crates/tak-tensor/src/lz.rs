@@ -8,11 +8,15 @@ use tak_context::{ByteModel, Match8Model, Order2NormalizedModel};
 use crate::{HEADER_LEN, crc32, read_u64};
 
 mod priced;
+mod variable_order;
+
+pub use variable_order::{VariableOrderProfile, profile_variable_order};
 
 const MAGIC: &[u8; 4] = b"TKLZ";
 const PHASE_MAGIC: &[u8; 4] = b"TKP7";
 const SHORT_MAGIC: &[u8; 4] = b"TKS3";
 const STRUCTURAL_MAGIC: &[u8; 4] = b"TKT9";
+const VARIABLE_ORDER_MAGIC: [u8; 4] = *b"TK32";
 const TABLE_BITS: u32 = 20;
 const TABLE_LEN: usize = 1 << TABLE_BITS;
 const HASH_MULTIPLIER: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -380,6 +384,45 @@ pub fn encode_lz_structural_stream(
         priced::RING_LEN,
         *STRUCTURAL_MAGIC,
         PhaseMatchModel::new(),
+        true,
+    )
+}
+
+/// Encodes the bounded RFC 0032 research stream.
+///
+/// # Errors
+///
+/// Uses the same input and I/O limits as RFC 0019.
+pub fn encode_lz_variable_order_stream(
+    mut input: impl Read + Seek,
+    mut output: impl Write + Seek,
+) -> Result<LzEncodeStats, LzStreamError> {
+    priced::encode_priced_stream_with_model(
+        &mut input,
+        &mut output,
+        priced::RING_LEN,
+        VARIABLE_ORDER_MAGIC,
+        variable_order::IntegerVariableOrder::new(),
+        true,
+    )
+}
+
+/// Decodes the bounded RFC 0032 research stream.
+///
+/// # Errors
+///
+/// Returns an error for invalid fields, limits, checksums, or I/O failures.
+pub fn decode_lz_variable_order_stream(
+    mut artifact: impl Read + Seek,
+    output: impl Write,
+    max_output: u64,
+) -> Result<LzStreamStats, LzStreamError> {
+    decode_lz_stream_with_model(
+        &mut artifact,
+        output,
+        max_output,
+        VARIABLE_ORDER_MAGIC,
+        variable_order::IntegerVariableOrder::new(),
         true,
     )
 }
