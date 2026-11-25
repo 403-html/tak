@@ -15,14 +15,17 @@ TAK beats gzip -9 on Calgary and enwik9 and beats Zstandard-19 on Calgary.
 | Compressor | Compressed bytes |
 |---|---:|
 | xz -9 | 885,860 |
-| **TAK (TK32, RFC 0034 parser)** | **906,449** |
+| **TAK (TK32 with optional byte shuffle, RFC 0038 screen)** | **893,989** |
+| TAK (TK32, RFC 0034 parser) | 906,449 |
 | Zstandard -19 | 921,073 |
 | gzip -9 | 1,059,335 |
 
-RFC 0034 is 20,589 bytes above xz. The single-run screen measured
-0.579 MB/s encoding and 1.407 MB/s decoding, with 113,432 KiB and
-43,932 KiB peak RSS, respectively. Every file restored exactly.
-[Benchmark results](research/experiments/2026-11-25-tk32-literal-repricing.md)
+RFC 0038 saves 12,460 bytes on geo and leaves Calgary 8,129 bytes above
+xz. It restored every trial exactly. The single-run screen spent 32.39 s
+trying all widths, or 0.10 MB/s over the original inputs, with
+122,748 KiB peak encoder RSS. The selected artifacts decoded at 0.97 MB/s
+with 48,544 KiB peak RSS.
+[Byte shuffle screen](research/experiments/2026-11-25-byte-shuffle.md)
 
 ### enwik9 (1 GB)
 
@@ -35,8 +38,9 @@ RFC 0034 is 20,589 bytes above xz. The single-run screen measured
 
 The single-run screen encoded at 0.76 MB/s with 256,844 KiB peak RSS.
 The decoder restored and compared every byte at 2.42 MB/s with
-113,952 KiB peak RSS. The artifact is 27,721,824 bytes above xz and
-46,396,020 above M2.
+113,952 KiB peak RSS. The byte shuffle screen selected ordinary TK32 for
+enwik9. The artifact is 27,721,824 bytes above xz and 46,396,020
+above M2.
 
 [Benchmark results](research/experiments/2026-11-25-tk32-literal-repricing.md)
 

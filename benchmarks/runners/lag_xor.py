@@ -79,13 +79,13 @@ def decode(codec, source, output, limit):
             destination.write(restored)
 
 
-def measure(directory, codec, operation, source, output, parameter):
+def measure(directory, codec, operation, source, output, parameter, *, runner=__file__):
     timing = directory / "timing"
     stdout = directory / "stdout"
     subprocess.run(
         [
             sys.executable, Path(__file__).with_name("measure.py"),
-            "--timing", timing, "--stdout", stdout, sys.executable, __file__,
+            "--timing", timing, "--stdout", stdout, sys.executable, runner,
             operation, codec, source, output, str(parameter),
         ],
         check=True,
