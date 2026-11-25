@@ -23,6 +23,7 @@ pub(super) enum ParseProfile {
     LiteralRunPrices,
     LongPrefix,
     ShiftedAnchor,
+    CombinedMatchSearch,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -264,18 +265,28 @@ fn parse_priced_with_table<I: PricedInput>(
 ) -> Result<(), LzStreamError> {
     let input_len = input.len();
     let mut table = ParserTable::new(associative);
-    let mut long_prefix = matches!(profile, ParseProfile::LongPrefix).then(LongPrefixTable::new);
+    let mut long_prefix = matches!(
+        profile,
+        ParseProfile::LongPrefix | ParseProfile::CombinedMatchSearch
+    )
+    .then(LongPrefixTable::new);
     let mut model = match profile {
         ParseProfile::Legacy => LiteralPrices::Match8(Match8Model::new()),
         ParseProfile::Repriced
         | ParseProfile::BucketEdges
         | ParseProfile::LiteralRunPrices
         | ParseProfile::LongPrefix
-        | ParseProfile::ShiftedAnchor => LiteralPrices::VariableOrder(IntegerVariableOrder::new()),
+        | ParseProfile::ShiftedAnchor
+        | ParseProfile::CombinedMatchSearch => {
+            LiteralPrices::VariableOrder(IntegerVariableOrder::new())
+        }
     };
-    let shifted_anchor = matches!(profile, ParseProfile::ShiftedAnchor);
+    let shifted_anchor = matches!(
+        profile,
+        ParseProfile::ShiftedAnchor | ParseProfile::CombinedMatchSearch
+    );
     let mut emitter = Emitter::new(structural_types);
-    let mut candidates: Vec<[Candidate; 3]> = Vec::with_capacity(SEGMENT_LEN);
+    let mut candidates: Vec<[Candidate; 4]> = Vec::with_capacity(SEGMENT_LEN);
     let mut literal_bits: Vec<f64> = Vec::with_capacity(SEGMENT_LEN);
     let mut position = 0;
     while position < input_len {
@@ -296,17 +307,26 @@ fn parse_priced_with_table<I: PricedInput>(
                     }
                 }
             }
-            if shifted_anchor {
-                extra = find_shifted_candidate(input, position, key, &table)?
-                    .filter(|found| found.length > longest.length)
-                    .unwrap_or_default();
+            let shifted = if shifted_anchor {
+                find_shifted_candidate(input, position, key, &table)?
+                    .filter(|found| {
+                        found.length > longest.length && found.distance != extra.distance
+                    })
+                    .unwrap_or_default()
+            } else {
+                Candidate::default()
+            };
+            let mut longest_available = longest;
+            for found in [extra, shifted] {
+                if found.length > longest_available.length {
+                    longest_available = found;
+                }
             }
-            let longest_available = if extra.length > 0 { extra } else { longest };
             if longest_available.length as usize >= NICE_LENGTH {
                 forced = Some(longest_available);
                 break;
             }
-            candidates.push([longest, nearest, extra]);
+            candidates.push([longest, nearest, extra, shifted]);
             let byte = input.byte(position)?;
             literal_bits.push(model.bits(byte));
             table.insert(key, position);
@@ -811,7 +831,7 @@ fn match_lengths(available: usize, bucket_edges: bool) -> impl Iterator<Item = u
 
 fn solve_segment(
     start: usize,
-    candidates: &[[Candidate; 3]],
+    candidates: &[[Candidate; 4]],
     literal_bits: &[f64],
     emitter: &mut Emitter,
     profile: ParseProfile,
