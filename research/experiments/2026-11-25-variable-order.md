@@ -33,6 +33,33 @@ Times sum independent one-repetition screens and include process
 startup. The binary search over composed cumulative ranges increases
 decode work. These measurements show a size-speed tradeoff.
 
+## enwik9
+
+| Model | Artifact bytes | Encode s | Decode s | Encode MB/s | Decode MB/s | Peak encode KiB | Peak decode KiB |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| RFC 0019, recorded | 249,762,881 | 628.62 | 111.88 | 1.59 | 8.94 | 220,912 | 96,024 |
+| TK32 | 246,642,016 | 798.17 | 451.45 | 1.25 | 2.22 | 238,692 | 113,824 |
+
+The complete TK32 stream saves 3,120,865 bytes (1.25%). It restores
+all 1,000,000,000 bytes exactly. The TK32 decode measurement includes
+the streaming comparison process. These are separate single-run screens.
+The original input digest matches the recorded RFC 0019 input.
+
+The remaining enwik9 gaps are 11,313,077 bytes to Zstandard-19,
+30,967,820 bytes to xz, and 49,642,016 bytes to nominal M2. Matching
+xz requires a 12.56% reduction from TK32. The older RFC 0019 result
+retains higher measured throughput.
+
+To reproduce the enwik9 measurement, use the same encode command above
+on enwik9. Run the decode comparison with pipeline failure detection
+so both commands must succeed:
+
+```console
+bash -o pipefail -c 'target/release/tak-lz-stream decode-variable-order enwik9.tk32 - --max-output 1000000000 | cmp enwik9 -'
+```
+
+[Raw enwik9 row](../../benchmarks/reports/raw/2026-11-25-variable-order-enwik9.tsv)
+
 ## Reproduction
 
 Build both binaries with

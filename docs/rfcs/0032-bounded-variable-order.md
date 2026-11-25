@@ -1,6 +1,6 @@
 # RFC 0032: Bounded variable-order literal prediction
 
-- Status: Calgary and Canterbury artifact screens passed
+- Status: Complete artifact measured on Calgary, Canterbury, and enwik9
 - Date: 2026-11-25
 - Scope: Classical probability diagnostic
 
@@ -85,3 +85,11 @@ control adds 80,268.045 bits and improves six files.
 The complete stream saves 24,018 bytes on Calgary and 26,211 bytes on
 the independent Canterbury files. It restores every file exactly.
 See [the experiment report](../../research/experiments/2026-11-25-variable-order.md).
+
+## enwik9 result
+
+TK32 compresses enwik9 to 246,642,016 bytes, 3,120,865 bytes below RFC 0019.
+The decoder restores all bytes exactly. The screen uses 238,692 KiB
+peak encode RSS and 113,824 KiB peak decode-and-compare RSS. Encoding
+takes 798.17 seconds. Decoding and comparison take 451.45 seconds.
+The artifact remains 30,967,820 bytes above xz.

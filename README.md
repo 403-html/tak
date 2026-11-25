@@ -30,14 +30,14 @@ respectively. [Full benchmark results](research/experiments/2026-11-25-variable-
 |---|---:|
 | xz -9 | 215.67 MB |
 | Zstandard -19 | 235.33 MB |
-| **TAK (RFC 0019)** | **249.76 MB** |
+| **TAK (RFC 0032)** | **246.64 MB** |
 | gzip -9 | 322.59 MB |
 
-**TAK performance:** 1.59 MB/s compression with 220,912 KiB peak RSS and
-8.94 MB/s decompression with 96,024 KiB peak RSS. Exact SHA-256-verified
-restoration. This bounded reference path prioritizes evidence over speed.
+RFC 0032 encoded at 1.25 MB/s with 238,692 KiB peak RSS. Decoding and
+byte-for-byte comparison reached 2.22 MB/s with 113,824 KiB peak RSS.
+This single-run screen is 30,967,820 bytes above xz and 49,642,016 above M2.
 
-[Full benchmark results](research/experiments/2026-11-24-structural-lz-block-types.md)
+[Full benchmark results](research/experiments/2026-11-25-variable-order.md)
 
 ## Build
 
@@ -339,6 +339,11 @@ RFC 0031 tested nine reversible lag-XOR transforms with the RFC 0019
 encoder. After wrapper overhead, only Calgary's `geo` improved, by 215
 bytes. All 290 Calgary and Canterbury trials restored exactly. The
 experiment ended at complete-artifact screening.
+
+RFC 0032 blends bounded counts from suffix orders three through six into
+the literal model. Singleton-weighted backoff saves 24,018 bytes on Calgary,
+26,211 bytes on independent Canterbury, and 3,120,865 bytes on enwik9.
+All streams restore exactly. The cumulative-range search slows decoding.
 
 Reproduce the RFC 0002 tensor artifact with:
 
