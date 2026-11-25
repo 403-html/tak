@@ -26,6 +26,7 @@ pub(super) enum ParseProfile {
     CombinedMatchSearch,
     MatchChain,
     ChainShorterMatch,
+    ChainDistancePrice,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -274,21 +275,15 @@ fn parse_priced_with_table<I: PricedInput>(
     .then(LongPrefixTable::new);
     let mut chain = matches!(
         profile,
-        ParseProfile::MatchChain | ParseProfile::ChainShorterMatch
+        ParseProfile::MatchChain
+            | ParseProfile::ChainShorterMatch
+            | ParseProfile::ChainDistancePrice
     )
     .then(MatchChain::new);
-    let mut model = match profile {
-        ParseProfile::Legacy => LiteralPrices::Match8(Match8Model::new()),
-        ParseProfile::Repriced
-        | ParseProfile::BucketEdges
-        | ParseProfile::LiteralRunPrices
-        | ParseProfile::LongPrefix
-        | ParseProfile::ShiftedAnchor
-        | ParseProfile::CombinedMatchSearch
-        | ParseProfile::MatchChain
-        | ParseProfile::ChainShorterMatch => {
-            LiteralPrices::VariableOrder(IntegerVariableOrder::new())
-        }
+    let mut model = if matches!(profile, ParseProfile::Legacy) {
+        LiteralPrices::Match8(Match8Model::new())
+    } else {
+        LiteralPrices::VariableOrder(IntegerVariableOrder::new())
     };
     let shifted_anchor = matches!(
         profile,
@@ -303,6 +298,8 @@ fn parse_priced_with_table<I: PricedInput>(
         candidates.clear();
         literal_bits.clear();
         let mut forced = None;
+        let distance_prices = matches!(profile, ParseProfile::ChainDistancePrice)
+            .then(|| symbol_prices(&emitter.state.distances));
         while position < input_len && position - start < SEGMENT_LEN {
             let key = input.key(position)?;
             let [longest, nearest] = find_candidates(input, position, key, &table)?;
@@ -311,8 +308,9 @@ fn parse_priced_with_table<I: PricedInput>(
                     input,
                     position,
                     key.and_then(|key| table.entry(key)),
-                    longest,
-                    matches!(profile, ParseProfile::ChainShorterMatch),
+                    [longest, nearest],
+                    profile,
+                    distance_prices.as_ref(),
                 )?,
                 (prefix, None) => find_indexed_extras(
                     input,
@@ -388,14 +386,23 @@ impl MatchChain {
         input: &mut impl PricedInput,
         position: usize,
         entry: Option<Entry>,
-        ordinary: Candidate,
-        include_previous: bool,
+        ordinary: [Candidate; 2],
+        profile: ParseProfile,
+        distance_prices: Option<&[f64; SYMBOLS]>,
     ) -> Result<(Candidate, Candidate), LzStreamError> {
-        let [best, previous] = self.search(input, position, entry, ordinary)?;
-        let alternative = if include_previous {
-            previous
-        } else {
-            Candidate::default()
+        let mut visited = [Candidate::default(); CHAIN_LIMIT - 2];
+        let [best, previous] =
+            self.search(input, position, entry, ordinary[0], |probe, candidate| {
+                if distance_prices.is_some() {
+                    visited[probe - 2] = candidate;
+                }
+            })?;
+        let alternative = match (profile, distance_prices) {
+            (ParseProfile::ChainShorterMatch, _) => previous,
+            (_, Some(prices)) => {
+                select_cheaper_match(&visited, [ordinary[0], ordinary[1], best], prices)
+            }
+            _ => Candidate::default(),
         };
         Ok((best, alternative))
     }
@@ -406,6 +413,7 @@ impl MatchChain {
         position: usize,
         entry: Option<Entry>,
         ordinary: Candidate,
+        mut visit: impl FnMut(usize, Candidate),
     ) -> Result<[Candidate; 2], LzStreamError> {
         let mut best = Candidate::default();
         let mut previous = Candidate::default();
@@ -423,6 +431,7 @@ impl MatchChain {
             }
             if probe >= 2 {
                 if let Some(candidate) = candidate_at(input, position, source)? {
+                    visit(probe, candidate);
                     if candidate.length > ordinary.length.max(best.length) {
                         previous = best;
                         best = candidate;
@@ -436,6 +445,35 @@ impl MatchChain {
         }
         Ok([best, previous])
     }
+}
+
+fn select_cheaper_match(
+    visited: &[Candidate],
+    references: [Candidate; 3],
+    prices: &[f64; SYMBOLS],
+) -> Candidate {
+    let mut best = Candidate::default();
+    let mut best_saving = 0.0;
+    for &candidate in visited {
+        if candidate.length == 0 {
+            continue;
+        }
+        let shared_length = (candidate.length as usize).min(MIN_MATCH + SHORT_LENGTHS - 1);
+        let reference_price = references
+            .iter()
+            .filter(|reference| reference.length as usize >= shared_length)
+            .map(|reference| bucket_price(prices, reference.distance as usize - 1))
+            .fold(f64::INFINITY, f64::min);
+        let saving = reference_price - bucket_price(prices, candidate.distance as usize - 1);
+        if saving > 0.0
+            && (saving > best_saving
+                || (saving.total_cmp(&best_saving).is_eq() && candidate.length > best.length))
+        {
+            best = candidate;
+            best_saving = saving;
+        }
+    }
+    best
 }
 
 fn insert_position(
@@ -1119,6 +1157,37 @@ mod tests {
     }
 
     #[test]
+    fn chain_price_uses_the_cheapest_source_that_covers_the_length() {
+        use super::{Candidate, SYMBOLS, select_cheaper_match};
+
+        let mut prices = [12.0; SYMBOLS];
+        prices[6] = 0.0;
+        prices[2] = 0.0;
+        let ordinary = Candidate {
+            length: 8,
+            distance: 4,
+        };
+        let longest = Candidate {
+            length: 24,
+            distance: 128,
+        };
+        let same_length = Candidate {
+            length: 8,
+            distance: 64,
+        };
+        let longer = Candidate {
+            length: 12,
+            distance: 64,
+        };
+        let selected = select_cheaper_match(
+            &[same_length, longer],
+            [ordinary, Candidate::default(), longest],
+            &prices,
+        );
+        assert_eq!((selected.length, selected.distance), (12, 64));
+    }
+
+    #[test]
     fn match_chain_finds_a_match_past_the_two_latest_positions() {
         use super::{MatchChain, find_candidates, insert_position};
 
@@ -1134,7 +1203,7 @@ mod tests {
         let [ordinary, _] = find_candidates(&mut input, 48, Some(key), &table).unwrap();
         assert_eq!(ordinary.length, 8);
         let [found, previous] = chain
-            .search(&mut input, 48, table.entry(key), ordinary)
+            .search(&mut input, 48, table.entry(key), ordinary, |_, _| {})
             .unwrap();
         assert_eq!(previous.length, 0);
         assert_eq!((found.distance, found.length), (48, 16));
@@ -1156,7 +1225,7 @@ mod tests {
         let key = input.key(64).unwrap().unwrap();
         let [ordinary, _] = find_candidates(&mut input, 64, Some(key), &table).unwrap();
         let [longest, previous] = chain
-            .search(&mut input, 64, table.entry(key), ordinary)
+            .search(&mut input, 64, table.entry(key), ordinary, |_, _| {})
             .unwrap();
         assert_eq!((longest.distance, longest.length), (64, 16));
         assert_eq!((previous.distance, previous.length), (48, 12));
