@@ -442,6 +442,18 @@ pub fn encode_lz_variable_order_literal_run_stream(
     encode_variable_order_with_prices(input, output, priced::ParseProfile::LiteralRunPrices)
 }
 
+/// Encodes TK32 with the additional RFC 0043 sixteen-byte search index.
+///
+/// # Errors
+///
+/// Uses the same input and I/O limits as RFC 0032.
+pub fn encode_lz_variable_order_long_prefix_stream(
+    input: impl Read + Seek,
+    output: impl Write + Seek,
+) -> Result<LzEncodeStats, LzStreamError> {
+    encode_variable_order_with_prices(input, output, priced::ParseProfile::LongPrefix)
+}
+
 fn encode_variable_order_with_prices(
     mut input: impl Read + Seek,
     mut output: impl Write + Seek,
