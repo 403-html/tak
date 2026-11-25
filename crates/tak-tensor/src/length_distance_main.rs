@@ -1,6 +1,6 @@
 use std::{env, fs, path::PathBuf, process::ExitCode, time::Instant};
 
-use tak_tensor::profile_length_conditioned_distance;
+use tak_tensor::{profile_length_conditioned_distance, profile_relative_distances};
 
 fn main() -> ExitCode {
     match run() {
@@ -14,7 +14,11 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
-    let (path, tail_bytes) = match args.as_slice() {
+    let (relative, args) = match args.as_slice() {
+        [flag, rest @ ..] if flag == "--relative" => (true, rest),
+        rest => (false, rest),
+    };
+    let (path, tail_bytes) = match args {
         [path] => (PathBuf::from(path), None),
         [path, option, value] if option == "--tail-bytes" => (
             PathBuf::from(path),
@@ -24,7 +28,7 @@ fn run() -> Result<(), String> {
                     .map_err(|_| "tail-bytes must be a nonnegative integer")?,
             ),
         ),
-        _ => return Err("expected INPUT [--tail-bytes N]".to_owned()),
+        _ => return Err("expected [--relative] INPUT [--tail-bytes N]".to_owned()),
     };
     let input = fs::read(path).map_err(|error| error.to_string())?;
     let input = if let Some(bytes) = tail_bytes {
@@ -38,6 +42,24 @@ fn run() -> Result<(), String> {
     };
 
     let start = Instant::now();
+    if relative {
+        let profile = profile_relative_distances(input);
+        println!(
+            "input_bytes\tmatches\trepeats\tcontrol_bits\trelative_bits\tmixture_bits\trepeat_saved_bits\tseconds"
+        );
+        println!(
+            "{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.9}",
+            input.len(),
+            profile.matches,
+            profile.repeats,
+            profile.control_bits,
+            profile.relative_bits,
+            profile.mixture_bits,
+            profile.repeat_saved_bits,
+            start.elapsed().as_secs_f64(),
+        );
+        return Ok(());
+    }
     let profile = profile_length_conditioned_distance(input);
     let seconds = start.elapsed().as_secs_f64();
     let saved_bits = profile.control_bits - profile.candidate_bits;
