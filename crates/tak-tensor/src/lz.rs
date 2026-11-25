@@ -7,9 +7,11 @@ use tak_context::{ByteModel, Match8Model, Order2NormalizedModel};
 
 use crate::{HEADER_LEN, crc32, read_u64};
 
+mod nibble;
 mod priced;
 mod variable_order;
 
+pub use nibble::{NibbleProfile, profile_nibble_mixture};
 pub use variable_order::{VariableOrderProfile, profile_variable_order};
 
 const MAGIC: &[u8; 4] = b"TKLZ";

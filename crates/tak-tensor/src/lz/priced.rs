@@ -203,6 +203,10 @@ pub(super) fn parse_priced_associative(input: &[u8]) -> Vec<Block> {
     parse_priced_mode_with_table(input, false, true)
 }
 
+pub(super) fn parse_priced_backoff(input: &[u8]) -> Vec<Block> {
+    collect_priced_blocks(input, false, false, true)
+}
+
 fn parse_priced_mode(input: &[u8], structural_types: bool) -> Vec<Block> {
     parse_priced_mode_with_table(input, structural_types, false)
 }
@@ -211,6 +215,15 @@ fn parse_priced_mode_with_table(
     input: &[u8],
     structural_types: bool,
     associative: bool,
+) -> Vec<Block> {
+    collect_priced_blocks(input, structural_types, associative, false)
+}
+
+fn collect_priced_blocks(
+    input: &[u8],
+    structural_types: bool,
+    associative: bool,
+    reprice_backoff: bool,
 ) -> Vec<Block> {
     let mut blocks = Vec::new();
     parse_priced_with_table(
@@ -221,7 +234,7 @@ fn parse_priced_mode_with_table(
         },
         structural_types,
         associative,
-        false,
+        reprice_backoff,
     )
     .expect("in-memory input cannot fail");
     blocks

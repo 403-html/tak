@@ -1,7 +1,8 @@
 use std::{env, fs, path::PathBuf, process::ExitCode, time::Instant};
 
 use tak_tensor::{
-    profile_match_distance_literal, profile_short_suffix_backoff, profile_variable_order,
+    profile_match_distance_literal, profile_nibble_mixture, profile_short_suffix_backoff,
+    profile_variable_order,
 };
 
 fn main() -> ExitCode {
@@ -17,7 +18,12 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
     let (experiment, args) = match args.as_slice() {
-        [flag, rest @ ..] if matches!(flag.as_str(), "--short-suffix" | "--variable-order") => {
+        [flag, rest @ ..]
+            if matches!(
+                flag.as_str(),
+                "--short-suffix" | "--variable-order" | "--nibble-mixture"
+            ) =>
+        {
             (flag.as_str(), rest)
         }
         rest => ("", rest),
@@ -34,7 +40,7 @@ fn run() -> Result<(), String> {
         ),
         _ => {
             return Err(
-                "expected [--short-suffix|--variable-order] INPUT [--tail-bytes N]".to_owned(),
+                "expected [--short-suffix|--variable-order|--nibble-mixture] INPUT [--tail-bytes N]".to_owned(),
             );
         }
     };
@@ -50,6 +56,10 @@ fn run() -> Result<(), String> {
     };
 
     let start = Instant::now();
+    if experiment == "--nibble-mixture" {
+        print_nibble_mixture(input, start);
+        return Ok(());
+    }
     if experiment == "--variable-order" {
         let profile = profile_variable_order(input);
         println!(
@@ -102,4 +112,18 @@ fn run() -> Result<(), String> {
         profile.candidate_bits,
     );
     Ok(())
+}
+
+fn print_nibble_mixture(input: &[u8], start: Instant) {
+    let profile = profile_nibble_mixture(input);
+    println!("input_bytes\tliterals\ttk32_bits\tnibble_bits\tmixture_bits\tseconds");
+    println!(
+        "{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.9}",
+        input.len(),
+        profile.literals,
+        profile.control_bits,
+        profile.nibble_bits,
+        profile.mixture_bits,
+        start.elapsed().as_secs_f64(),
+    );
 }
