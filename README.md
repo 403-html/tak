@@ -30,16 +30,15 @@ RFC 0034 is 20,589 bytes above xz. The single-run screen measured
 |---|---:|
 | xz -9 | 215.67 MB |
 | Zstandard -19 | 235.33 MB |
-| **TAK (RFC 0032)** | **246.64 MB** |
+| **TAK (TK32, RFC 0034 parser)** | **243.40 MB** |
 | gzip -9 | 322.59 MB |
 
-RFC 0032 encoded at 1.25 MB/s with 238,692 KiB peak RSS. The RFC 0033
-decoder restored and compared every byte at 2.56 MB/s with 113,952 KiB
-peak RSS. The artifact is 30,967,820 bytes above xz and 49,642,016 above M2.
-Encode and decode are separate single-run screens.
+The single-run screen encoded at 0.76 MB/s with 256,844 KiB peak RSS.
+The decoder restored and compared every byte at 2.42 MB/s with
+113,952 KiB peak RSS. The artifact is 27,721,824 bytes above xz and
+46,396,020 above M2.
 
-[Codec results](research/experiments/2026-11-25-variable-order.md) ·
-[Decoder results](research/experiments/2026-11-25-tk32-boundary-search.md)
+[Benchmark results](research/experiments/2026-11-25-tk32-literal-repricing.md)
 
 ## Build
 

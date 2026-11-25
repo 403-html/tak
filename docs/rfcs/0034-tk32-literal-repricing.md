@@ -1,6 +1,6 @@
 # RFC 0034: Price TK32 literal backoff during parsing
 
-- Status: Calgary and Canterbury gates passed
+- Status: Calgary, Canterbury, and enwik9 verified
 - Date: 2026-11-25
 - Scope: Encoder parse experiment
 
@@ -33,3 +33,8 @@ Seventeen of eighteen files improve. Independent Canterbury saves
 6,782 bytes and improves nine of ten files. Every measured stream
 restores exactly. Both results pass the size gate.
 [Experiment report](../../research/experiments/2026-11-25-tk32-literal-repricing.md)
+
+The enwik9 artifact is 243,396,020 bytes. It saves 3,245,996 bytes
+against the RFC 0032 parse. The decoder restored all input bytes.
+Peak RSS was 256,844 KiB for encode and 113,952 KiB for decode and
+compare. The artifact is 27,721,824 bytes above xz.

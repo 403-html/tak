@@ -27,6 +27,24 @@ increases encode time and peak memory. Timings sum the per-file runs
 and include process startup and file output. Each row is a one-run
 screen. The byte comparison occurs outside the measurement.
 
+## enwik9
+
+| Profile | Bytes | Encode s | Decode and compare s | Encode MB/s | Decode and compare MB/s | Peak encode KiB | Peak decode and compare KiB |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| TK32, recorded RFC 0032 encode and RFC 0033 decode | 246,642,016 | 798.17 | 390.69 | 1.25 | 2.56 | 238,692 | 113,952 |
+| TK32, RFC 0034 parse | 243,396,020 | 1,315.45 | 413.07 | 0.76 | 2.42 | 256,844 | 113,952 |
+
+The complete stream saves 3,245,996 bytes (1.32%). Streaming comparison
+verified all 1,000,000,000 original bytes. The gap is 8,067,081 bytes to
+Zstandard-19, 27,721,824 to xz, and 46,396,020 to nominal M2.
+Matching xz requires a further 11.39% reduction.
+
+These are separate single-run screens on the same input. Workspace
+checks ran during the early part of the new encode. The timing includes
+this overlap. The Calgary and Canterbury runs measured the same binaries
+back to back and provide the direct comparison of encoding cost.
+[Raw enwik9 row](../../benchmarks/reports/raw/2026-11-25-tk32-literal-repricing-enwik9.tsv)
+
 ## Reproduction
 
 Build `cargo build --release -p tak-tensor --bin tak-lz-stream`.
@@ -36,6 +54,13 @@ Use `tak-lz-stream decode-variable-order ARTIFACT RESTORED --max-output INPUT_BY
 for either artifact. Measure each operation with
 `benchmarks/runners/measure.py` and verify output with `cmp`.
 The raw rows record input hashes and full artifact sizes.
+
+For the enwik9 decode screen, time the whole pipeline with the same
+measurement runner:
+
+```console
+bash -o pipefail -c 'target/release/tak-lz-stream decode-variable-order enwik9.tk32 - --max-output 1000000000 | cmp enwik9 -'
+```
 
 Source is `092356c` plus RFC 0034. Linux 6.18.57, Intel Xeon Platinum
 8573C, x86-64, three visible logical CPUs, and 10,207,480 KiB visible RAM.
