@@ -430,6 +430,18 @@ pub fn encode_lz_variable_order_bucket_edges_stream(
     encode_variable_order_with_prices(input, output, priced::ParseProfile::BucketEdges)
 }
 
+/// Encodes TK32 with literal run length prices from RFC 0042.
+///
+/// # Errors
+///
+/// Uses the same input and I/O limits as RFC 0032.
+pub fn encode_lz_variable_order_literal_run_stream(
+    input: impl Read + Seek,
+    output: impl Write + Seek,
+) -> Result<LzEncodeStats, LzStreamError> {
+    encode_variable_order_with_prices(input, output, priced::ParseProfile::LiteralRunPrices)
+}
+
 fn encode_variable_order_with_prices(
     mut input: impl Read + Seek,
     mut output: impl Write + Seek,

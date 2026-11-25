@@ -20,6 +20,7 @@ pub(super) enum ParseProfile {
     Legacy,
     Repriced,
     BucketEdges,
+    LiteralRunPrices,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -47,6 +48,11 @@ impl Prices {
 
     fn literal_start(&self) -> f64 {
         self.types[0] + self.literal_lengths[0]
+    }
+
+    fn literal_extension(&self, length: usize) -> f64 {
+        bucket_price(&self.literal_lengths, length)
+            - bucket_price(&self.literal_lengths, length - 1)
     }
 
     fn match_cost(
@@ -258,7 +264,7 @@ fn parse_priced_with_table<I: PricedInput>(
     let mut table = ParserTable::new(associative);
     let mut model = match profile {
         ParseProfile::Legacy => LiteralPrices::Match8(Match8Model::new()),
-        ParseProfile::Repriced | ParseProfile::BucketEdges => {
+        ParseProfile::Repriced | ParseProfile::BucketEdges | ParseProfile::LiteralRunPrices => {
             LiteralPrices::VariableOrder(IntegerVariableOrder::new())
         }
     };
@@ -285,13 +291,7 @@ fn parse_priced_with_table<I: PricedInput>(
             model.update(byte);
             position += 1;
         }
-        solve_segment(
-            start,
-            &candidates,
-            &literal_bits,
-            &mut emitter,
-            matches!(profile, ParseProfile::BucketEdges),
-        );
+        solve_segment(start, &candidates, &literal_bits, &mut emitter, profile);
         if let Some(candidate) = forced {
             let length = candidate.length as usize;
             emitter.matched(length, candidate.distance as usize);
@@ -714,7 +714,7 @@ fn solve_segment(
     candidates: &[[Candidate; 2]],
     literal_bits: &[f64],
     emitter: &mut Emitter,
-    bucket_edges: bool,
+    profile: ParseProfile,
 ) {
     let count = candidates.len();
     if count == 0 {
@@ -726,10 +726,16 @@ fn solve_segment(
     let mut match_cost = vec![f64::INFINITY; count + 1];
     let mut literal_step = vec![Step::Unreached; count + 1];
     let mut match_step = vec![Step::Unreached; count + 1];
-    initialize_segment_costs(emitter, &mut literal_cost, &mut match_cost);
+    let bucket_edges = matches!(profile, ParseProfile::BucketEdges);
+    let price_run = matches!(profile, ParseProfile::LiteralRunPrices);
+    initialize_segment_costs(emitter, &mut literal_cost, &mut match_cost, price_run);
+    let mut run_length = emitter.literal_length;
     for index in 0..count {
         let bits = literal_bits[index];
-        let continued = literal_cost[index] + bits;
+        let mut continued = literal_cost[index] + bits;
+        if price_run && run_length != 0 {
+            continued += prices.literal_extension(run_length);
+        }
         let started = match_cost[index] + bits + literal_start;
         let (cost, from_literal) = if continued <= started {
             (continued, true)
@@ -739,6 +745,7 @@ fn solve_segment(
         if cost < literal_cost[index + 1] {
             literal_cost[index + 1] = cost;
             literal_step[index + 1] = Step::Literal { from_literal };
+            run_length = if from_literal { run_length + 1 } else { 1 };
         }
 
         let (base, from_literal) = if literal_cost[index] < match_cost[index] {
@@ -803,12 +810,18 @@ fn solve_segment(
     debug_assert_eq!(position, start + count);
 }
 
-fn initialize_segment_costs(emitter: &Emitter, literal_cost: &mut [f64], match_cost: &mut [f64]) {
+fn initialize_segment_costs(
+    emitter: &Emitter,
+    literal_cost: &mut [f64],
+    match_cost: &mut [f64],
+    price_run: bool,
+) {
     if emitter.literal_length == 0 {
         match_cost[0] = 0.0;
     } else {
         literal_cost[0] = 0.0;
-        if !emitter.state.structural_types {
+        // A carried run cannot start again to avoid its extension price.
+        if !emitter.state.structural_types && !price_run {
             match_cost[0] = 0.0;
         }
     }
@@ -840,8 +853,9 @@ mod tests {
 
     use super::super::{decode_lz_artifact, encode_lz_priced_artifact};
     use super::{
-        Block, Entry, ParserTable, TABLE_LEN, encode_priced_stream, encode_priced_stream_with_ring,
-        match_lengths, parse_priced, parse_priced_structural,
+        Block, Emitter, Entry, ParserTable, Prices, TABLE_LEN, encode_priced_stream,
+        encode_priced_stream_with_ring, initialize_segment_costs, match_lengths, parse_priced,
+        parse_priced_structural,
     };
 
     fn noise(length: usize, mut state: u64) -> Vec<u8> {
@@ -853,6 +867,24 @@ mod tests {
                 state.to_le_bytes()[0]
             })
             .collect()
+    }
+
+    #[test]
+    fn literal_extension_prices_only_bucket_changes() {
+        let prices = Prices::new(&Emitter::new(false).state);
+        assert_eq!(prices.literal_extension(2).to_bits(), 0.0_f64.to_bits());
+        assert_eq!(prices.literal_extension(3).to_bits(), 1.0_f64.to_bits());
+    }
+
+    #[test]
+    fn carried_literal_run_can_only_extend_or_end() {
+        let mut emitter = Emitter::new(false);
+        emitter.literal(0);
+        let mut literal_cost = [f64::INFINITY];
+        let mut match_cost = [f64::INFINITY];
+        initialize_segment_costs(&emitter, &mut literal_cost, &mut match_cost, true);
+        assert_eq!(literal_cost[0].to_bits(), 0.0_f64.to_bits());
+        assert!(match_cost[0].is_infinite());
     }
 
     #[test]
