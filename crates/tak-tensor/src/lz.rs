@@ -490,6 +490,18 @@ pub fn encode_lz_variable_order_match_chain_stream(
     encode_variable_order_with_prices(input, output, priced::ParseProfile::MatchChain)
 }
 
+/// Encodes TK32 with the additional chain candidate from RFC 0047.
+///
+/// # Errors
+///
+/// Uses the same input and I/O limits as RFC 0032.
+pub fn encode_lz_variable_order_chain_shorter_stream(
+    input: impl Read + Seek,
+    output: impl Write + Seek,
+) -> Result<LzEncodeStats, LzStreamError> {
+    encode_variable_order_with_prices(input, output, priced::ParseProfile::ChainShorterMatch)
+}
+
 fn encode_variable_order_with_prices(
     mut input: impl Read + Seek,
     mut output: impl Write + Seek,

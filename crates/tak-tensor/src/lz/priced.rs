@@ -25,6 +25,7 @@ pub(super) enum ParseProfile {
     ShiftedAnchor,
     CombinedMatchSearch,
     MatchChain,
+    ChainShorterMatch,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -271,7 +272,11 @@ fn parse_priced_with_table<I: PricedInput>(
         ParseProfile::LongPrefix | ParseProfile::CombinedMatchSearch
     )
     .then(LongPrefixTable::new);
-    let mut chain = matches!(profile, ParseProfile::MatchChain).then(MatchChain::new);
+    let mut chain = matches!(
+        profile,
+        ParseProfile::MatchChain | ParseProfile::ChainShorterMatch
+    )
+    .then(MatchChain::new);
     let mut model = match profile {
         ParseProfile::Legacy => LiteralPrices::Match8(Match8Model::new()),
         ParseProfile::Repriced
@@ -280,7 +285,10 @@ fn parse_priced_with_table<I: PricedInput>(
         | ParseProfile::LongPrefix
         | ParseProfile::ShiftedAnchor
         | ParseProfile::CombinedMatchSearch
-        | ParseProfile::MatchChain => LiteralPrices::VariableOrder(IntegerVariableOrder::new()),
+        | ParseProfile::MatchChain
+        | ParseProfile::ChainShorterMatch => {
+            LiteralPrices::VariableOrder(IntegerVariableOrder::new())
+        }
     };
     let shifted_anchor = matches!(
         profile,
@@ -298,38 +306,30 @@ fn parse_priced_with_table<I: PricedInput>(
         while position < input_len && position - start < SEGMENT_LEN {
             let key = input.key(position)?;
             let [longest, nearest] = find_candidates(input, position, key, &table)?;
-            let mut extra = Candidate::default();
-            if let Some(prefix) = &mut long_prefix {
-                extra = prefix.find_longer(input, position, key, longest)?;
-            }
-            if let Some(chain) = &chain {
-                extra = chain.search(
+            let (extra, alternative) = match (&mut long_prefix, &chain) {
+                (_, Some(chain)) => chain.search_extras(
                     input,
                     position,
                     key.and_then(|key| table.entry(key)),
                     longest,
-                )?;
-            }
-            let shifted = if shifted_anchor {
-                find_shifted_candidate(input, position, key, &table)?
-                    .filter(|found| {
-                        found.length > longest.length && found.distance != extra.distance
-                    })
-                    .unwrap_or_default()
-            } else {
-                Candidate::default()
+                    matches!(profile, ParseProfile::ChainShorterMatch),
+                )?,
+                (prefix, None) => find_indexed_extras(
+                    input,
+                    position,
+                    key,
+                    &table,
+                    prefix.as_mut(),
+                    shifted_anchor,
+                    longest,
+                )?,
             };
-            let mut longest_available = longest;
-            for found in [extra, shifted] {
-                if found.length > longest_available.length {
-                    longest_available = found;
-                }
-            }
-            if longest_available.length as usize >= NICE_LENGTH {
-                forced = Some(longest_available);
+            let found = [longest, nearest, extra, alternative];
+            if let Some(candidate) = forced_match(longest, [extra, alternative]) {
+                forced = Some(candidate);
                 break;
             }
-            candidates.push([longest, nearest, extra, shifted]);
+            candidates.push(found);
             let byte = input.byte(position)?;
             literal_bits.push(model.bits(byte));
             insert_position(&mut table, chain.as_mut(), key, position);
@@ -363,6 +363,15 @@ fn parse_priced_with_table<I: PricedInput>(
     Ok(())
 }
 
+fn forced_match(mut longest: Candidate, extras: [Candidate; 2]) -> Option<Candidate> {
+    for candidate in extras {
+        if candidate.length > longest.length {
+            longest = candidate;
+        }
+    }
+    (longest.length as usize >= NICE_LENGTH).then_some(longest)
+}
+
 const CHAIN_WINDOW: usize = 1 << 20;
 const CHAIN_LIMIT: usize = 16;
 const NO_LINK: u32 = u32::MAX;
@@ -374,19 +383,37 @@ impl MatchChain {
         Self(vec![NO_LINK; CHAIN_WINDOW])
     }
 
+    fn search_extras(
+        &self,
+        input: &mut impl PricedInput,
+        position: usize,
+        entry: Option<Entry>,
+        ordinary: Candidate,
+        include_previous: bool,
+    ) -> Result<(Candidate, Candidate), LzStreamError> {
+        let [best, previous] = self.search(input, position, entry, ordinary)?;
+        let alternative = if include_previous {
+            previous
+        } else {
+            Candidate::default()
+        };
+        Ok((best, alternative))
+    }
+
     fn search(
         &self,
         input: &mut impl PricedInput,
         position: usize,
         entry: Option<Entry>,
         ordinary: Candidate,
-    ) -> Result<Candidate, LzStreamError> {
+    ) -> Result<[Candidate; 2], LzStreamError> {
         let mut best = Candidate::default();
+        let mut previous = Candidate::default();
         if ordinary.length as usize >= NICE_LENGTH {
-            return Ok(best);
+            return Ok([best, previous]);
         }
         let Some(entry) = entry else {
-            return Ok(best);
+            return Ok([best, previous]);
         };
         let mut source = entry.position;
         for probe in 0..CHAIN_LIMIT {
@@ -397,6 +424,7 @@ impl MatchChain {
             if probe >= 2 {
                 if let Some(candidate) = candidate_at(input, position, source)? {
                     if candidate.length > ordinary.length.max(best.length) {
+                        previous = best;
                         best = candidate;
                         if best.length as usize >= NICE_LENGTH {
                             break;
@@ -406,7 +434,7 @@ impl MatchChain {
             }
             source = self.0[index & (CHAIN_WINDOW - 1)];
         }
-        Ok(best)
+        Ok([best, previous])
     }
 }
 
@@ -812,6 +840,29 @@ fn find_candidates<I: PricedInput>(
     Ok(found)
 }
 
+fn find_indexed_extras(
+    input: &mut impl PricedInput,
+    position: usize,
+    key: Option<u64>,
+    table: &ParserTable,
+    prefix: Option<&mut LongPrefixTable>,
+    shifted_anchor: bool,
+    longest: Candidate,
+) -> Result<(Candidate, Candidate), LzStreamError> {
+    let extra = match prefix {
+        Some(prefix) => prefix.find_longer(input, position, key, longest)?,
+        None => Candidate::default(),
+    };
+    let shifted = if shifted_anchor {
+        find_shifted_candidate(input, position, key, table)?
+            .filter(|found| found.length > longest.length && found.distance != extra.distance)
+            .unwrap_or_default()
+    } else {
+        Candidate::default()
+    };
+    Ok((extra, shifted))
+}
+
 fn find_shifted_candidate(
     input: &mut impl PricedInput,
     position: usize,
@@ -1082,10 +1133,33 @@ mod tests {
         let key = input.key(48).unwrap().unwrap();
         let [ordinary, _] = find_candidates(&mut input, 48, Some(key), &table).unwrap();
         assert_eq!(ordinary.length, 8);
-        let found = chain
+        let [found, previous] = chain
             .search(&mut input, 48, table.entry(key), ordinary)
             .unwrap();
+        assert_eq!(previous.length, 0);
         assert_eq!((found.distance, found.length), (48, 16));
+    }
+
+    #[test]
+    fn match_chain_retains_the_preceding_length_record() {
+        use super::{MatchChain, find_candidates, insert_position};
+
+        let bytes =
+            b"abcdefgh12345678abcdefgh12349999abcdefgh55555555abcdefgh77777777abcdefgh12345678";
+        let mut input = SliceInput(bytes);
+        let mut table = ParserTable::new(false);
+        let mut chain = MatchChain::new();
+        for position in [0, 16, 32, 48] {
+            let key = input.key(position).unwrap();
+            insert_position(&mut table, Some(&mut chain), key, position);
+        }
+        let key = input.key(64).unwrap().unwrap();
+        let [ordinary, _] = find_candidates(&mut input, 64, Some(key), &table).unwrap();
+        let [longest, previous] = chain
+            .search(&mut input, 64, table.entry(key), ordinary)
+            .unwrap();
+        assert_eq!((longest.distance, longest.length), (64, 16));
+        assert_eq!((previous.distance, previous.length), (48, 12));
     }
 
     #[test]
